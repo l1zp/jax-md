@@ -33,13 +33,15 @@ from jax import jit, vmap
 
 from jax_md import smap, space, energy, quantity, partition
 from jax_md.util import *
+from jax_md import test_util
 
 jax_config.parse_flags_with_absl()
 FLAGS = jax_config.FLAGS
 
+test_util.update_test_tolerance(f32_tolerance=5e-6, f64_tolerance=1e-14)
 
 PARTICLE_COUNT = 1000
-STOCHASTIC_SAMPLES = 10
+STOCHASTIC_SAMPLES = 3
 SPATIAL_DIMENSION = [2, 3]
 
 NEIGHBOR_LIST_PARTICLE_COUNT = 100
@@ -73,7 +75,7 @@ class SMapTest(jtu.JaxTestCase):
 
       accum = harmonic(metric(R[0], R[1])) + harmonic(metric(R[0], R[2]))
 
-      self.assertAllClose(mapped(R), dtype(accum), True)
+      self.assertAllClose(mapped(R), dtype(accum))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -98,7 +100,7 @@ class SMapTest(jtu.JaxTestCase):
 
       accum = harmonic(metric(R[0], R[1])) + harmonic(metric(R[0], R[2]))
 
-      self.assertAllClose(mapped(R, bonds), dtype(accum), True)
+      self.assertAllClose(mapped(R, bonds), dtype(accum))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -126,7 +128,7 @@ class SMapTest(jtu.JaxTestCase):
 
       accum = harmonic(metric(R[0], R[1]), 1) + harmonic(metric(R[0], R[2]), 2)
 
-      self.assertAllClose(mapped(R), dtype(accum), True)
+      self.assertAllClose(mapped(R), dtype(accum))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -154,7 +156,7 @@ class SMapTest(jtu.JaxTestCase):
 
       accum = harmonic(metric(R[0], R[1]), 1) + harmonic(metric(R[0], R[2]), 2)
 
-      self.assertAllClose(mapped(R, bonds, bond_types), dtype(accum), True)
+      self.assertAllClose(mapped(R, bonds, bond_types), dtype(accum))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -181,7 +183,7 @@ class SMapTest(jtu.JaxTestCase):
 
       accum = harmonic(metric(R[0], R[1]), 1) + harmonic(metric(R[0], R[2]), 2)
 
-      self.assertAllClose(mapped(R, bonds, sigma=sigma), dtype(accum), True)
+      self.assertAllClose(mapped(R, bonds, sigma=sigma), dtype(accum))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -208,37 +210,37 @@ class SMapTest(jtu.JaxTestCase):
 
       accum = harmonic(metric(R[0], R[1]), 1) + harmonic(metric(R[0], R[2]), 2)
 
-      self.assertAllClose(mapped(R), dtype(accum), True)
+      self.assertAllClose(mapped(R), dtype(accum))
 
   def test_get_species_parameters(self):
     species = [(0, 0), (0, 1), (1, 0), (1, 1)]
     params = np.array([[2.0, 3.0], [3.0, 1.0]])
     global_params = 3.0
     self.assertAllClose(
-        smap._get_species_parameters(params, species[0]), 2.0, True)
+        smap._get_species_parameters(params, species[0]), 2.0)
     self.assertAllClose(
-        smap._get_species_parameters(params, species[1]), 3.0, True)
+        smap._get_species_parameters(params, species[1]), 3.0)
     self.assertAllClose(
-        smap._get_species_parameters(params, species[2]), 3.0, True)
+        smap._get_species_parameters(params, species[2]), 3.0)
     self.assertAllClose(
-        smap._get_species_parameters(params, species[3]), 1.0, True)
+        smap._get_species_parameters(params, species[3]), 1.0)
     for s in species:
       self.assertAllClose(
-          smap._get_species_parameters(global_params, s), 3.0, True)
+          smap._get_species_parameters(global_params, s), 3.0)
 
   def test_get_matrix_parameters(self):
     params = np.array([1.0, 2.0])
     params_mat_test = np.array([[1.0, 1.5], [1.5, 2.0]])
     params_mat = smap._get_matrix_parameters(params)
-    self.assertAllClose(params_mat, params_mat_test, True)
+    self.assertAllClose(params_mat, params_mat_test)
 
     params_mat_direct = np.array([[1.0, 2.0], [3.0, 4.0]])
     self.assertAllClose(
-        smap._get_matrix_parameters(params_mat_direct), params_mat_direct, True)
+        smap._get_matrix_parameters(params_mat_direct), params_mat_direct)
 
     params_scalar = 1.0
     self.assertAllClose(
-        smap._get_matrix_parameters(params_scalar), params_scalar, True)
+        smap._get_matrix_parameters(params_scalar), params_scalar)
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -263,7 +265,7 @@ class SMapTest(jtu.JaxTestCase):
         split, (PARTICLE_COUNT, spatial_dimension), dtype=dtype)
       self.assertAllClose(
         mapped_square(R),
-        np.array(0.5 * np.sum(square(metric(R, R))), dtype=dtype), True)
+        np.array(0.5 * np.sum(square(metric(R, R))), dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -290,7 +292,7 @@ class SMapTest(jtu.JaxTestCase):
       self.assertAllClose(
         mapped_square(R, epsilon=epsilon),
         np.array(0.5 * np.sum(
-          square(metric(R, R), mat_epsilon)), dtype=dtype), True)
+          square(metric(R, R), mat_epsilon)), dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -312,7 +314,7 @@ class SMapTest(jtu.JaxTestCase):
       R = random.uniform(
         split, (PARTICLE_COUNT, spatial_dimension), dtype=dtype)
       mapped_ref = np.array(0.5 * np.sum(square(disp(R, R))), dtype=dtype)
-      self.assertAllClose(mapped_square(R), mapped_ref, True)
+      self.assertAllClose(mapped_square(R), mapped_ref)
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -348,7 +350,7 @@ class SMapTest(jtu.JaxTestCase):
           R_1 = R[species == i]
           R_2 = R[species == j]
           total = total + 0.5 * np.sum(square(metric(R_1, R_2), param))
-      self.assertAllClose(mapped_square(R), np.array(total, dtype=dtype), True)
+      self.assertAllClose(mapped_square(R), np.array(total, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -386,7 +388,7 @@ class SMapTest(jtu.JaxTestCase):
           R_2 = R[species == j]
           total = total + 0.5 * np.sum(square(metric(R_1, R_2), param))
       self.assertAllClose(
-        mapped_square(R, param=params), np.array(total, dtype=dtype), True)
+        mapped_square(R, param=params), np.array(total, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -439,7 +441,7 @@ class SMapTest(jtu.JaxTestCase):
           R_1 = R[species == i]
           R_2 = R[species == j]
           total = total + 0.5 * np.sum(square(disp(R_1, R_2), param))
-      self.assertAllClose(mapped_square(R), np.array(total, dtype=dtype), True)
+      self.assertAllClose(mapped_square(R), np.array(total, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -476,7 +478,7 @@ class SMapTest(jtu.JaxTestCase):
           R_2 = R[species == j]
           total = total + 0.5 * np.sum(square(metric(R_1, R_2), param))
       self.assertAllClose(
-        mapped_square(R, species, 2), np.array(total, dtype=dtype), True)
+        mapped_square(R, species, 2), np.array(total, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -512,7 +514,7 @@ class SMapTest(jtu.JaxTestCase):
           R_2 = R[species == j]
           total = total + 0.5 * np.sum(square(disp(R_1, R_2), param))
       self.assertAllClose(
-        mapped_square(R, species, 2), np.array(total, dtype=dtype), True)
+        mapped_square(R, species, 2), np.array(total, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -526,8 +528,6 @@ class SMapTest(jtu.JaxTestCase):
 
     def truncated_square(dr, sigma):
       return np.where(dr < sigma, dr ** 2, f32(0.))
-
-    tol = 2e-10 if dtype == np.float32 else None
 
     N = NEIGHBOR_LIST_PARTICLE_COUNT
     box_size = 4. * N ** (1. / spatial_dimension)
@@ -544,10 +544,76 @@ class SMapTest(jtu.JaxTestCase):
       R = box_size * random.uniform(
         split, (N, spatial_dimension), dtype=dtype)
       sigma = random.uniform(key, (), minval=0.5, maxval=2.5)
-      neighbor_fn = jit(partition.neighbor_list(disp, box_size, sigma, R))
-      idx = neighbor_fn(R)
+      neighbor_fn = partition.neighbor_list(disp, box_size, sigma, 0.0)
+      nbrs = neighbor_fn(R)
       self.assertAllClose(mapped_square(R, sigma=sigma),
-                          neighbor_square(R, idx, sigma=sigma), True, tol, tol)
+                          neighbor_square(R, nbrs, sigma=sigma))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_pair_neighbor_list_scalar_diverging_potential(
+      self, spatial_dimension, dtype):
+    key = random.PRNGKey(0)
+
+    def potential(dr, sigma):
+      return np.where(dr < sigma, dr ** -6, f32(0.))
+
+    N = NEIGHBOR_LIST_PARTICLE_COUNT
+    box_size = 4. * N ** (1. / spatial_dimension)
+
+    key, split = random.split(key)
+    disp, _ = space.periodic(box_size)
+    d = space.metric(disp)
+
+    neighbor_square = jit(smap.pair_neighbor_list(potential, d))
+    mapped_square = jit(smap.pair(potential, d))
+
+    for _ in range(STOCHASTIC_SAMPLES):
+      key, split = random.split(key)
+      R = box_size * random.uniform(
+        split, (N, spatial_dimension), dtype=dtype)
+      sigma = random.uniform(key, (), minval=0.5, maxval=2.5)
+      neighbor_fn = partition.neighbor_list(disp, box_size, sigma, 0.0)
+      nbrs = neighbor_fn(R)
+      self.assertAllClose(mapped_square(R, sigma=sigma),
+                          neighbor_square(R, nbrs, sigma=sigma))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_pair_neighbor_list_force_scalar_diverging_potential(
+      self, spatial_dimension, dtype):
+    key = random.PRNGKey(0)
+
+    def potential(dr, sigma):
+      return np.where(dr < sigma, dr ** -6, f32(0.))
+
+    N = NEIGHBOR_LIST_PARTICLE_COUNT
+    box_size = 4. * N ** (1. / spatial_dimension)
+
+    key, split = random.split(key)
+    disp, _ = space.periodic(box_size)
+    d = space.metric(disp)
+
+    neighbor_square = jit(quantity.force(smap.pair_neighbor_list(potential, d)))
+    mapped_square = jit(quantity.force(smap.pair(potential, d)))
+
+    for _ in range(STOCHASTIC_SAMPLES):
+      key, split = random.split(key)
+      R = box_size * random.uniform(
+        split, (N, spatial_dimension), dtype=dtype)
+      sigma = random.uniform(key, (), minval=0.5, maxval=4.5)
+      neighbor_fn = partition.neighbor_list(disp, box_size, sigma, 0.0)
+      nbrs = neighbor_fn(R)
+      self.assertAllClose(mapped_square(R, sigma=sigma),
+                          neighbor_square(R, nbrs, sigma=sigma))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -561,8 +627,6 @@ class SMapTest(jtu.JaxTestCase):
 
     def truncated_square(dr, sigma):
       return np.where(dr < sigma, dr ** 2, f32(0.))
-
-    tol = 2e-10 if dtype == np.float32 else None
 
     N = NEIGHBOR_LIST_PARTICLE_COUNT
     box_size = 2. * N ** (1. / spatial_dimension)
@@ -578,11 +642,10 @@ class SMapTest(jtu.JaxTestCase):
       key, split = random.split(key)
       R = box_size * random.uniform(split, (N, spatial_dimension), dtype=dtype)
       sigma = random.uniform(key, (N,), minval=0.5, maxval=1.5)
-      neighbor_fn = jit(
-        partition.neighbor_list(disp, box_size, np.max(sigma), R))
-      idx = neighbor_fn(R)
+      neighbor_fn = partition.neighbor_list(disp, box_size, np.max(sigma), 0.)
+      nbrs = neighbor_fn(R)
       self.assertAllClose(mapped_square(R, sigma=sigma),
-                          neighbor_square(R, idx, sigma=sigma), True, tol, tol)
+                          neighbor_square(R, nbrs, sigma=sigma))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -596,8 +659,6 @@ class SMapTest(jtu.JaxTestCase):
 
     def truncated_square(dr, sigma):
       return np.where(dr < sigma, dr ** 2, f32(0.))
-
-    tol = 2e-10 if dtype == np.float32 else None
 
     N = NEIGHBOR_LIST_PARTICLE_COUNT
     box_size = 2. * N ** (1. / spatial_dimension)
@@ -614,11 +675,10 @@ class SMapTest(jtu.JaxTestCase):
       R = box_size * random.uniform(split, (N, spatial_dimension), dtype=dtype)
       sigma = random.uniform(key, (N, N), minval=0.5, maxval=1.5)
       sigma = 0.5 * (sigma + sigma.T)
-      neighbor_fn = jit(
-        partition.neighbor_list(disp, box_size, np.max(sigma), R))
-      idx = neighbor_fn(R)
+      neighbor_fn = partition.neighbor_list(disp, box_size, np.max(sigma), 0.)
+      nbrs = neighbor_fn(R)
       self.assertAllClose(mapped_square(R, sigma=sigma),
-                          neighbor_square(R, idx, sigma=sigma), True, tol, tol)
+                          neighbor_square(R, nbrs, sigma=sigma))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -632,8 +692,6 @@ class SMapTest(jtu.JaxTestCase):
 
     def truncated_square(dr, sigma):
       return np.where(dr < sigma, dr ** 2, f32(0.))
-
-    tol = 2e-10 if dtype == np.float32 else None
 
     N = NEIGHBOR_LIST_PARTICLE_COUNT
     box_size = 2. * N ** (1. / spatial_dimension)
@@ -654,14 +712,13 @@ class SMapTest(jtu.JaxTestCase):
       R = box_size * random.uniform(split, (N, spatial_dimension), dtype=dtype)
       sigma = random.uniform(key, (3, 3), minval=0.5, maxval=1.5)
       sigma = 0.5 * (sigma + sigma.T)
-      neighbor_fn = jit(
-        partition.neighbor_list(disp, box_size, np.max(sigma), R))
-      idx = neighbor_fn(R)
+      neighbor_fn = partition.neighbor_list(disp, box_size, np.max(sigma), 0.)
+      nbrs = neighbor_fn(R)
       self.assertAllClose(mapped_square(R, sigma=sigma),
-                          neighbor_square(R, idx, sigma=sigma), True, tol, tol)
+                          neighbor_square(R, nbrs, sigma=sigma))
 
   @parameterized.named_parameters(jtu.cases_from_list(
-      {
+    {
           'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
           'spatial_dimension': dim,
           'dtype': dtype
@@ -672,8 +729,6 @@ class SMapTest(jtu.JaxTestCase):
     def truncated_square(dR, sigma):
       dr = np.reshape(space.distance(dR), dR.shape[:-1] + (1,))
       return np.where(dr < sigma, dR ** 2, f32(0.))
-
-    tol = 5e-6 if dtype == np.float32 else 1e-14
 
     N = PARTICLE_COUNT
     box_size = 2. * N ** (1. / spatial_dimension)
@@ -690,10 +745,10 @@ class SMapTest(jtu.JaxTestCase):
       R = box_size * random.uniform(
         split, (N, spatial_dimension), dtype=dtype)
       sigma = random.uniform(key, (), minval=0.5, maxval=1.5)
-      neighbor_fn = jit(partition.neighbor_list(disp, box_size, sigma, R))
-      idx = neighbor_fn(R)
+      neighbor_fn = partition.neighbor_list(disp, box_size, sigma, 0.)
+      nbrs = neighbor_fn(R)
       self.assertAllClose(mapped_square(R, sigma=sigma),
-                          neighbor_square(R, idx, sigma=sigma), True, tol, tol)
+                          neighbor_square(R, nbrs, sigma=sigma))
 
 if __name__ == '__main__':
   absltest.main()

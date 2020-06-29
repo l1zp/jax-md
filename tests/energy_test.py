@@ -12,17 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for google3.third_party.py.jax_md.energy."""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+"""Tests for jax_md.energy."""
 
 from absl.testing import absltest
 from absl.testing import parameterized
 
 from jax.config import config as jax_config
 from jax import random
+from jax import jit, vmap
+from jax.experimental import optix
 import jax.numpy as np
 
 import numpy as onp
@@ -47,13 +45,14 @@ SPATIAL_DIMENSION = [2, 3]
 UNIT_CELL_SIZE = [7, 8]
 
 SOFT_SPHERE_ALPHA = [2.0, 3.0]
+N_TYPES_TO_TEST = [1, 2]
 
 if FLAGS.jax_enable_x64:
   POSITION_DTYPE = [f32, f64]
 else:
   POSITION_DTYPE = [f32]
 
-update_test_tolerance(1e-5, 1e-7)
+update_test_tolerance(2e-5, 1e-6)
 
 
 def lattice_repeater(small_cell_pos, latvec, no_rep):
@@ -137,7 +136,7 @@ class EnergyTest(jtu.JaxTestCase):
       alpha = random.uniform(key, (), minval=2., maxval=4.)
       E = energy.simple_spring_bond(disp, bonds, length=length, alpha=alpha)
       E_exact = dtype((dist - length) ** alpha / alpha)
-      self.assertAllClose(E(R), E_exact, True)
+      self.assertAllClose(E(R), E_exact)
 
 
   # pylint: disable=g-complex-comprehension
@@ -163,15 +162,15 @@ class EnergyTest(jtu.JaxTestCase):
         dtype=dtype)
       self.assertAllClose(
           energy.soft_sphere(
-            dtype(0), sigma, epsilon, alpha), epsilon / alpha, True)
+            dtype(0), sigma, epsilon, alpha), epsilon / alpha)
       self.assertAllClose(
         energy.soft_sphere(dtype(sigma), sigma, epsilon, alpha),
-        np.array(0.0, dtype=dtype), True)
+        np.array(0.0, dtype=dtype))
 
       if alpha == 3.0:
         grad_energy = grad(energy.soft_sphere)
         g = grad_energy(dtype(sigma), sigma, epsilon, alpha)
-        self.assertAllClose(g, np.array(0, dtype=dtype), True)
+        self.assertAllClose(g, np.array(0, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -191,9 +190,50 @@ class EnergyTest(jtu.JaxTestCase):
       dr = dtype(sigma * 2 ** (1.0 / 6.0))
       self.assertAllClose(
         energy.lennard_jones(dr, sigma, epsilon),
-        np.array(-epsilon, dtype=dtype), True)
+        np.array(-epsilon, dtype=dtype))
       g = grad(energy.lennard_jones)(dr, sigma, epsilon)
-      self.assertAllClose(g, np.array(0, dtype=dtype), True)
+      self.assertAllClose(g, np.array(0, dtype=dtype))
+      
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_morse(self, spatial_dimension, dtype):
+    key = random.PRNGKey(0)
+
+    for _ in range(STOCHASTIC_SAMPLES):
+      key, split_sigma, split_epsilon, split_alpha = random.split(key, 4)
+      sigma = dtype(random.uniform(
+          split_sigma, (1,), minval=0., maxval=3.0)[0])
+      epsilon = dtype(random.uniform(
+          split_epsilon, (1,), minval=0.0, maxval=4.0)[0])
+      alpha = dtype(random.uniform(
+          split_alpha, (1,), minval=1.0, maxval=30.0)[0])
+      dr = dtype(sigma)
+      self.assertAllClose(
+        energy.morse(dr, sigma, epsilon, alpha),
+        np.array(-epsilon, dtype=dtype))
+      g = grad(energy.morse)(dr, sigma, epsilon, alpha)
+      self.assertAllClose(g, np.array(0, dtype=dtype))
+    
+    # if dr = a/alpha + sigma, then V_morse(dr, sigma, epsilon, alpha)/epsilon
+    #   should be independent of sigma, epsilon, and alpha, depending only on a.
+    key, split_sigma, split_epsilon, split_alpha = random.split(key, 4)
+    sigmas = random.uniform(
+        split_sigma, (STOCHASTIC_SAMPLES,), minval=0., maxval=3.0)
+    epsilons = random.uniform(
+        split_epsilon, (STOCHASTIC_SAMPLES,), minval=0.1, maxval=4.0)
+    alphas = random.uniform(
+        split_alpha, (STOCHASTIC_SAMPLES,), minval=1.0, maxval=30.0)
+    for sigma,epsilon,alpha in zip(sigmas,epsilons,alphas):
+      a = np.linspace(max(-2.5, -alpha * sigma), 8.0, 100)
+      dr = np.array(a / alpha + sigma, dtype=dtype)
+      U = energy.morse(dr, sigma, epsilon, alpha)/dtype(epsilon)
+      Ucomp = np.array((dtype(1) - np.exp(-a)) ** dtype(2) - dtype(1), 
+                       dtype=dtype)
+      self.assertAllClose(U, Ucomp)    
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -211,9 +251,9 @@ class EnergyTest(jtu.JaxTestCase):
       epsilon = f32(random.uniform(
           split_epsilon, (1,), minval=0.0, maxval=4.0)[0])
       r_small = random.uniform(
-          split_rs, (10,), minval=0.0, maxval=2.0 * sigma, dtype=dtype) 
+          split_rs, (10,), minval=0.0, maxval=2.0 * sigma, dtype=dtype)
       r_large = random.uniform(
-          split_rl, (10,), minval=2.5 * sigma, maxval=3.0 * sigma, dtype=dtype) 
+          split_rl, (10,), minval=2.5 * sigma, maxval=3.0 * sigma, dtype=dtype)
 
       r_onset = f32(2.0 * sigma)
       r_cutoff = f32(2.5 * sigma)
@@ -223,9 +263,9 @@ class EnergyTest(jtu.JaxTestCase):
 
       self.assertAllClose(
         E(r_small, sigma, epsilon),
-        energy.lennard_jones(r_small, sigma, epsilon), True)
+        energy.lennard_jones(r_small, sigma, epsilon))
       self.assertAllClose(
-        E(r_large, sigma, epsilon), np.zeros_like(r_large, dtype=dtype), True) 
+        E(r_large, sigma, epsilon), np.zeros_like(r_large, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -243,13 +283,13 @@ class EnergyTest(jtu.JaxTestCase):
     R = box_size * random.uniform(
       key, (PARTICLE_COUNT, spatial_dimension), dtype=dtype)
     neighbor_fn, energy_fn = energy.soft_sphere_neighbor_list(
-      displacement, box_size, R)
+      displacement, box_size)
 
-    idx = neighbor_fn(R)
+    nbrs = neighbor_fn(R)
 
     self.assertAllClose(
       np.array(exact_energy_fn(R), dtype=dtype),
-      energy_fn(R, idx), True)
+      energy_fn(R, nbrs))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -269,12 +309,87 @@ class EnergyTest(jtu.JaxTestCase):
     R = box_size * random.uniform(
       key, (PARTICLE_COUNT, spatial_dimension), dtype=dtype)
     neighbor_fn, energy_fn = energy.lennard_jones_neighbor_list(
-      displacement, box_size, R)
+      displacement, box_size)
 
-    idx = neighbor_fn(R)
+    nbrs = neighbor_fn(R)
     self.assertAllClose(
       np.array(exact_energy_fn(R), dtype=dtype),
-      energy_fn(R, idx), True)
+      energy_fn(R, nbrs))
+  
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_morse_cell_neighbor_list_energy(
+      self, spatial_dimension, dtype):
+    key = random.PRNGKey(1)
+
+    box_size = f32(15)
+    displacement, _ = space.periodic(box_size)
+    metric = space.metric(displacement)
+    exact_energy_fn = energy.morse_pair(displacement)
+
+    R = box_size * random.uniform(
+      key, (PARTICLE_COUNT, spatial_dimension), dtype=dtype)
+    neighbor_fn, energy_fn = energy.morse_neighbor_list(
+      displacement, box_size)
+
+    nbrs = neighbor_fn(R)
+    self.assertAllClose(
+      np.array(exact_energy_fn(R), dtype=dtype),
+      energy_fn(R, nbrs))
+    
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_morse_small_neighbor_list_energy(
+      self, spatial_dimension, dtype):
+    key = random.PRNGKey(1)
+
+    box_size = f32(5.0)
+    displacement, _ = space.periodic(box_size)
+    metric = space.metric(displacement)
+    exact_energy_fn = energy.morse_pair(displacement)
+
+    R = box_size * random.uniform(
+      key, (10, spatial_dimension), dtype=dtype)
+    neighbor_fn, energy_fn = energy.morse_neighbor_list(
+      displacement, box_size)
+
+    nbrs = neighbor_fn(R)
+    self.assertAllClose(
+      np.array(exact_energy_fn(R), dtype=dtype),
+      energy_fn(R, nbrs))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_lennard_jones_small_neighbor_list_energy(
+      self, spatial_dimension, dtype):
+    key = random.PRNGKey(1)
+
+    box_size = f32(5.0)
+    displacement, _ = space.periodic(box_size)
+    metric = space.metric(displacement)
+    exact_energy_fn = energy.lennard_jones_pair(displacement)
+
+    R = box_size * random.uniform(
+      key, (10, spatial_dimension), dtype=dtype)
+    neighbor_fn, energy_fn = energy.lennard_jones_neighbor_list(
+      displacement, box_size)
+
+    nbrs = neighbor_fn(R)
+    self.assertAllClose(
+      np.array(exact_energy_fn(R), dtype=dtype),
+      energy_fn(R, nbrs))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -290,16 +405,62 @@ class EnergyTest(jtu.JaxTestCase):
     metric = space.metric(displacement)
     exact_force_fn = quantity.force(energy.lennard_jones_pair(displacement))
 
-    R = box_size * random.uniform(
+    r = box_size * random.uniform(
       key, (PARTICLE_COUNT, spatial_dimension), dtype=dtype)
     neighbor_fn, energy_fn = energy.lennard_jones_neighbor_list(
-      displacement, box_size, R)
+      displacement, box_size)
     force_fn = quantity.force(energy_fn)
 
-    idx = neighbor_fn(R)
+    nbrs = neighbor_fn(r)
     self.assertAllClose(
-      np.array(exact_force_fn(R), dtype=dtype),
-      force_fn(R, idx), True)
+      np.array(exact_force_fn(r), dtype=dtype),
+      force_fn(r, nbrs))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_N_types={}_dtype={}'.format(N_types, dtype.__name__),
+          'N_types': N_types,
+          'dtype': dtype,
+      } for N_types in N_TYPES_TO_TEST for dtype in POSITION_DTYPE))
+  def test_behler_parrinello_network(self, N_types, dtype):
+    key = random.PRNGKey(1)
+    R = np.array([[0,0,0], [1,1,1], [1,1,0]], dtype)
+    species = np.array([1, 1, N_types])
+    box_size = f32(1.5)
+    displacement, _ = space.periodic(box_size)
+    nn_init, nn_apply = energy.behler_parrinello(displacement, species)
+    params = nn_init(key, R)
+    nn_force_fn = grad(nn_apply, argnums=1)
+    nn_force = nn_force_fn(params, R)
+    nn_energy = nn_apply(params, R)
+    self.assertAllClose(np.any(np.isnan(nn_energy)), False)
+    self.assertAllClose(np.any(np.isnan(nn_force)), False)
+    self.assertAllClose(nn_force.shape, [3,3])
+  
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_morse_neighbor_list_force(self, spatial_dimension, dtype):
+    key = random.PRNGKey(1)
+
+    box_size = f32(15.0)
+    displacement, _ = space.periodic(box_size)
+    metric = space.metric(displacement)
+    exact_force_fn = quantity.force(energy.morse_pair(displacement))
+
+    r = box_size * random.uniform(
+      key, (PARTICLE_COUNT, spatial_dimension), dtype=dtype)
+    neighbor_fn, energy_fn = energy.morse_neighbor_list(
+      displacement, box_size)
+    force_fn = quantity.force(energy_fn)
+
+    nbrs = neighbor_fn(r)
+    self.assertAllClose(
+      np.array(exact_force_fn(r), dtype=dtype),
+      force_fn(r, nbrs))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -314,18 +475,111 @@ class EnergyTest(jtu.JaxTestCase):
     atoms = np.array([[0, 0, 0]], dtype=dtype)
     atoms_repeated, latvec_repeated = lattice_repeater(
         atoms, latvec, num_repetitions)
-    inv_latvec = np.array(onp.linalg.inv(onp.array(latvec_repeated)))
+    inv_latvec = np.array(onp.linalg.inv(onp.array(latvec_repeated)), dtype=dtype)
     displacement, _ = space.periodic_general(latvec_repeated)
     charge_fn, embedding_fn, pairwise_fn = make_eam_test_splines()
-    assert charge_fn(dtype(1.0)).dtype == dtype
-    assert embedding_fn(dtype(1.0)).dtype == dtype
-    assert pairwise_fn(dtype(1.0)).dtype == dtype
+    assert charge_fn(np.array(1.0, dtype)).dtype == dtype
+    assert embedding_fn(np.array(1.0, dtype)).dtype == dtype
+    assert pairwise_fn(np.array(1.0, dtype)).dtype == dtype
     eam_energy = energy.eam(displacement, charge_fn, embedding_fn, pairwise_fn)
-    tol = 1e-5 if dtype == np.float32 else 1e-6
     self.assertAllClose(
         eam_energy(
-            np.dot(atoms_repeated, inv_latvec)) / f32(num_repetitions ** 3),
-        dtype(-3.363338), True, tol, tol)
+            np.dot(atoms_repeated, inv_latvec)) / np.array(num_repetitions ** 3, dtype),
+        dtype(-3.363338))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_graph_network_shape_dtype(self, spatial_dimension, dtype):
+    key = random.PRNGKey(0)
+
+    R = random.uniform(key, (32, spatial_dimension), dtype=dtype)
+
+    d, _ = space.free()
+
+    cutoff = 0.2
+
+    init_fn, energy_fn = energy.graph_network(d, cutoff)
+    params = init_fn(key, R)
+
+    E_out = energy_fn(params, R) 
+
+    assert E_out.shape == ()
+    assert E_out.dtype == dtype 
+
+  
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_graph_network_neighbor_list(self, spatial_dimension, dtype):
+    key = random.PRNGKey(0)
+
+    R = random.uniform(key, (32, spatial_dimension), dtype=dtype)
+
+    d, _ = space.free()
+
+    cutoff = 0.2
+
+    init_fn, energy_fn = energy.graph_network(d, cutoff)
+    params = init_fn(key, R)
+
+    neighbor_fn, _, nl_energy_fn = \
+      energy.graph_network_neighbor_list(d, 1.0, cutoff, 0.0)
+
+    nbrs = neighbor_fn(R)
+    self.assertAllClose(energy_fn(params, R), nl_energy_fn(params, R, nbrs))
+
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_graph_network_learning(self, spatial_dimension, dtype):
+    key = random.PRNGKey(0)
+
+    R_key, dr0_key, params_key = random.split(key, 3)
+
+    d, _ = space.free()
+
+    R = random.uniform(R_key, (6, 3, spatial_dimension), dtype=dtype)
+    dr0 = random.uniform(dr0_key, (6, 3, 3), dtype=dtype)
+    E_gt = vmap(
+      lambda R, dr0: \
+      np.sum((space.distance(space.map_product(d)(R, R)) - dr0) ** 2))
+
+    cutoff = 0.2
+
+    init_fn, energy_fn = energy.graph_network(d, cutoff)
+    params = init_fn(params_key, R[0])
+
+    @jit
+    def loss(params, R):
+      return np.mean((vmap(energy_fn, (None, 0))(params, R) - E_gt(R, dr0)) ** 2)
+    
+    opt = optix.chain(optix.clip_by_global_norm(1.0), optix.adam(1e-4))
+
+
+    @jit
+    def update(params, opt_state, R):
+      updates, opt_state = opt.update(grad(loss)(params, R),
+                                      opt_state)
+      return optix.apply_updates(params, updates), opt_state
+    
+    opt_state = opt.init(params)
+
+    l0 = loss(params, R)
+    for i in range(4):
+      params, opt_state = update(params, opt_state, R)
+
+    assert loss(params, R) < l0 * 0.95
 
 if __name__ == '__main__':
   absltest.main()

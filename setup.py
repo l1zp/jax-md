@@ -25,12 +25,14 @@ INSTALL_REQUIRES = [
     'absl-py',
     'numpy',
     'jax>=0.1.55',
-    'jaxlib>=0.1.37'
+    'jaxlib>=0.1.37',
+    'dm-haiku',
+    'dataclasses'
 ]
 
 setuptools.setup(
     name='jax-md',
-    version='0.1.0',
+    version='0.1.6',
     license='Apache 2.0',
     author='Google',
     author_email='jax-md-dev@google.com',
@@ -48,8 +50,6 @@ setuptools.setup(
     description='Differentiable, Hardware Accelerated, Molecular Dynamics',
     python_requires='>=2.7',
     classifiers=[
-        'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
         'License :: OSI Approved :: Apache Software License',

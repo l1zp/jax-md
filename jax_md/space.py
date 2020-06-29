@@ -13,6 +13,21 @@
 # limitations under the License.
 
 """Code to define different spaces in which particles are simulated.
+
+Spaces are pairs of functions containing:
+
+  * `displacement_fn(Ra, Rb, **kwargs)`
+    Computes displacements between pairs of particles. Ra and Rb should
+    be ndarrays of shape [spatial_dim]. Returns an ndarray of shape
+    [spatial_dim]. To compute displacements over sets of positions, use
+    vmap. Soon (TODO) we will add convenience functions to do this where
+    needed.
+
+  * `shift_fn(R, dR, **kwargs)` Moves points at position R by an amount dR.
+
+In each case, **kwargs is optional keyword arguments that can be supplied to
+the different functions. In cases where the space features time dependence
+this will be passed through a "t" keyword argument.
 """
 
 from __future__ import absolute_import
@@ -23,13 +38,17 @@ from jax.abstract_arrays import ShapedArray
 
 from jax import eval_shape
 from jax import vmap
-from jax import custom_transforms
+from jax import custom_jvp
 
 import jax
 
 import jax.numpy as np
 
-from jax_md.util import *
+from jax_md.util import f32
+from jax_md.util import f64
+from jax_md.util import safe_mask
+from jax_md.util import check_kwargs_time_dependence
+from jax_md.util import check_kwargs_empty
 
 # Primitive Spatial Transforms
 
@@ -55,19 +74,11 @@ def _small_inverse(T):
   """Compute the inverse of a small matrix."""
   _check_transform_shapes(T)
   dim = T.shape[0]
-
   # TODO(schsam): Check whether matrices are singular. @ErrorChecking
-
-  if dim == 2:
-    det = T[0, 0] * T[1, 1] - T[0, 1] * T[1, 0]
-    return np.array([[T[1, 1], -T[0, 1]], [-T[1, 0], T[0, 0]]], dtype=T.dtype) / det
-
-  # TODO(schsam): Fill in the 3x3 case by hand.
-
   return np.linalg.inv(T)
 
 
-@custom_transforms
+@custom_jvp
 def transform(T, v):
   """Apply a linear transformation, T, to a collection of vectors, v.
 
@@ -83,7 +94,13 @@ def transform(T, v):
   """
   _check_transform_shapes(T, v)
   return np.dot(v, T)
-jax.defjvp(transform, None, lambda g, ans, T, v: g)
+
+
+@transform.defjvp
+def transform_jvp(primals, tangents):
+  T, v = primals
+  dT, dv = tangents
+  return transform(T, v), dv
 
 
 def pairwise_displacement(Ra, Rb):
@@ -143,7 +160,8 @@ def distance(dR):
   Returns:
     Matrix of distances; ndarray(shape=[...]).
   """
-  return np.sqrt(square_distance(dR))
+  dr = square_distance(dR)
+  return safe_mask(dr > 0, np.sqrt, dr)
 
 
 def periodic_shift(side, R, dR):
@@ -151,25 +169,7 @@ def periodic_shift(side, R, dR):
   return np.mod(R + dR, side)
 
 
-"""
-Spaces
-
-  The following functions provide the necessary transformations to perform
-  simulations in different spaces.
-
-  Spaces are tuples containing:
-      displacement_fn(Ra, Rb, **kwargs): Computes displacements between pairs of
-        particles. Ra and Rb should be ndarrays of shape [spatial_dim]. Returns
-        an ndarray of shape [spatial_dim]. To compute displacements over sets
-        of positions, use vmap. Soon (TODO) we will add convenience functions
-        to do this where needed.
-
-      shift_fn(R, dR, **kwargs): Moves points at position R by an amount dR.
-
-  In each case, **kwargs is optional keyword arguments that can be supplied to
-  the different functions. In cases where the space features time dependence
-  this will be passed through a "t" keyword argument.
-"""
+""" Spaces """
 
 
 def free():
@@ -283,8 +283,14 @@ def map_product(metric_or_displacement):
   return vmap(vmap(metric_or_displacement, (0, None), 0), (None, 0), 0)
 
 
-def map_set(metric_or_displacement):
+def map_bond(metric_or_displacement):
   return vmap(metric_or_displacement, (0, 0), 0)
+
+
+def map_neighbor(metric_or_displacement):
+  def wrapped_fn(Ra, Rb, **kwargs):
+    return vmap(vmap(metric_or_displacement, (None, 0)))(-Ra, -Rb, **kwargs)
+  return wrapped_fn
 
 
 def canonicalize_displacement_or_metric(displacement_or_metric):

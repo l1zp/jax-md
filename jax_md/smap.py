@@ -380,9 +380,13 @@ def _neighborhood_kwargs_to_params(idx, species=None, **kwargs):
       out_dict[k] = _get_neighborhood_species_params(idx, species, kwargs[k])
   return out_dict
 
+def _vectorized_cond(pred, fn, operand):
+  masked = np.where(pred, operand, 1)
+  return np.where(pred, fn(masked), 0)
+
 def pair_neighbor_list(
     fn, metric, species=None, reduce_axis=None, keepdims=False, **kwargs):
-  """Promotes a function a pair of particles to one using neighbor lists.
+  """Promotes a function acting on pairs of particles to use neighbor lists.
 
   Args:
     fn: A function that takes an ndarray of pairwise distances or displacements
@@ -416,18 +420,18 @@ def pair_neighbor_list(
     positions and and ndarray of integers of shape [N, max_neighbors]
     specifying neighbors.
   """
-  def fn_mapped(R, neighbor_idx, **dynamic_kwargs):
+  def fn_mapped(R, neighbor, **dynamic_kwargs):
     d = partial(metric, **dynamic_kwargs)
     d = vmap(vmap(d, (None, 0)))
-    mask = neighbor_idx != R.shape[0]
-    R_neigh = R[neighbor_idx]
+    mask = neighbor.idx != R.shape[0]
+    R_neigh = R[neighbor.idx]
     dR = d(R, R_neigh)
-    merged_kwargs = _neighborhood_kwargs_to_params(neighbor_idx, species,
+    merged_kwargs = _neighborhood_kwargs_to_params(neighbor.idx, species,
         **merge_dicts(kwargs, dynamic_kwargs))
     out = fn(dR, **merged_kwargs)
     if out.ndim > mask.ndim:
       ddim = out.ndim - mask.ndim
       mask = np.reshape(mask, mask.shape + (1,) * ddim)
-    out = out * mask
+    out = np.where(mask, out, 0.)
     return _high_precision_sum(out, reduce_axis, keepdims) / 2.
   return fn_mapped

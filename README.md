@@ -1,6 +1,8 @@
 # JAX, M.D. [[arXiv](https://arxiv.org/abs/1912.04232)]
 
 ### Accelerated, Differentiable, Molecular Dynamics
+[**Quickstart**](#getting-started)
+| [**Reference docs**](https://jax-md.readthedocs.io/en/latest/)
 
 [![Build Status](https://travis-ci.org/google/jax-md.svg?branch=master)](https://travis-ci.org/google/jax-md) [![PyPI](https://img.shields.io/pypi/v/jax-md)](https://pypi.org/project/jax-md/) [![PyPI - License](https://img.shields.io/pypi/l/jax_md)](https://github.com/google/jax-md/blob/master/LICENSE)
 
@@ -36,6 +38,11 @@ To get started playing around with JAX MD check out the following colab notebook
 - [Minimization](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/minimization.ipynb)
 - [NVE Simulation](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/nve_simulation.ipynb)
 - [NVT Simulation](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/nvt_simulation.ipynb)
+- [NVE with Neighbor Lists](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/nve_neighbor_list.ipynb)
+- [Custom Potentials](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/customizing_potentials_cookbook.ipynb)
+- [Neural Network Potentials](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/neural_networks.ipynb)
+- [Flocking](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/flocking.ipynb)
+- [Meta Optimization](https://colab.research.google.com/github/google/jax-md/blob/master/notebooks/meta_optimization.ipynb)
 
 You can install JAX MD locally with pip,
 ```
@@ -51,7 +58,7 @@ pip install -e jax-md
 
 We now summarize the main components of the library.
 
-## Spaces ([`space.py`](https://github.com/google/jax-md/blob/master/jax_md/space.py))
+## Spaces ([`space.py`](https://jax-md.readthedocs.io/en/latest/jax_md.space.html))
 
 In general we must have a way of computing the pairwise distance between atoms.
 We must also have efficient strategies for moving atoms in some space that may
@@ -71,7 +78,7 @@ box_size = 25.0
 displacement_fn, shift_fn = space.periodic(box_size)
 ```
 
-## Potential Energy ([`energy.py`](https://github.com/google/jax-md/blob/master/jax_md/energy.py))
+## Potential Energy ([`energy.py`](https://jax-md.readthedocs.io/en/latest/jax_md.energy.html))
 
 In the simplest case, molecular dynamics calculations are often based on a pair
 potential that is defined by a user. This then is used to compute a total energy
@@ -79,29 +86,35 @@ whose negative gradient gives forces. One of the very nice things about JAX is
 that we get forces for free! The second part of the code is devoted to computing
 energies. 
 
-We provide the following potentials:
+We provide the following classical potentials:
 - `energy.soft_sphere` a soft sphere whose energy incrases as the overlap of the spheres to some power, `alpha`.
 - `energy.lennard_jones` a standard 12-6 lennard-jones potential.
+- `energy.morse` a morse potential.
 - `energy.eam` embedded atom model potential with ability to load parameters from LAMMPS files.
+
+We also provide the following neural network potentials:
+- `energy.behler_parrinello` a widely used fixed-feature neural network architecture for molecular systems.
+- `energy.graph_network` a deep graph neural network designed for energy fitting.
 
 For finite-ranged potentials it is often useful to consider only interactions within a certain neighborhood. We include the `_neighbor_list` modifier to the above potentials that uses a list of neighbors (see below) for optimization.
 
 Example:
 
 ```python
+import jax.numpy as np
 from jax import random
 from jax_md import energy, quantity
 N = 1000
 spatial_dimension = 2
 key = random.PRNGKey(0)
 R = random.uniform(key, (N, spatial_dimension), minval=0.0, maxval=1.0)
-energy_fn = energy.lennard_jones_pair(displacement)
-print('E = {}'.format(energy(R)))
+energy_fn = energy.lennard_jones_pair(displacement_fn)
+print('E = {}'.format(energy_fn(R)))
 force_fn = quantity.force(energy_fn)
 print('Total Squared Force = {}'.format(np.sum(force_fn(R) ** 2)))
 ```
 
-## Dynamics ([`simulate.py`](https://github.com/google/jax-md/blob/master/jax_md/simulate.py), [`minimize.py`](https://github.com/google/jax-md/blob/master/jax_md/minimize.py))
+## Dynamics ([`simulate.py`](https://jax-md.readthedocs.io/en/latest/jax_md.simulate.html), [`minimize.py`](https://jax-md.readthedocs.io/en/latest/jax_md.minimize.html))
 
 Given an energy function and a system, there are a number of dynamics are useful
 to simulate. The simulation code is based on the structure of the optimizers
@@ -133,14 +146,14 @@ Example:
 from jax_md import simulate
 temperature = 1.0
 dt = 1e-3
-init, update = simulate.nvt_nose_hoover(energy, wrap_fn, dt, temperature)
-state = init(R)
+init, update = simulate.nvt_nose_hoover(energy_fn, shift_fn, dt, temperature)
+state = init(key, R)
 for _ in range(100):
   state = update(state)
-R = state.positions
+R = state.position
 ```
 
-## Spatial Partitioning ([`partition.py`](https://github.com/google/jax-md/blob/master/jax_md/partition.py))
+## Spatial Partitioning ([`partition.py`](https://jax-md.readthedocs.io/en/latest/jax_md.partition.html))
 
 In many applications, it is useful to construct spatial partitions of particles / objects in a simulation. 
 
@@ -152,6 +165,8 @@ Cell List Example:
 ```python
 from jax_md import partition
 
+cell_size = 5.0
+capacity = 10
 cell_list_fn = partition.cell_list(box_size, cell_size, capacity)
 cell_list_data = cell_list_fn(R)
 ```
@@ -160,12 +175,19 @@ Neighbor List Example:
 ```python
 from jax_md import partition
 
-neighbor_list_fn = partition.neighbor_list(displacement, box_size, cell_size, R)
-neighbor_idx = neighbor_list_fn(R) 
+neighbor_list_fn = partition.neighbor_list(displacement_fn, box_size, cell_size)
+neighbors = neighbor_list_fn(R) # Create a new neighbor list.
 
-# neighbor_idx is a [N, max_neighbors] ndarray of neighbor ids for each particle.
+# Do some simulating....
+
+neighbors = neighbor_list_fn(R, neighbors)  # Update the neighbor list without resizing.
+if neighbors.did_buffer_overflow:  # Couldn't fit all the neighbors into the list.
+  neighbors = neighbor_list_fn(R)  # So create a new neighbor list.
+
+# neighbors.idx is a [N, max_neighbors] ndarray of neighbor ids for each particle.
 # Empty slots are marked by id == N.
 ```
+
 # Development
 
 JAX MD is under active development. We have very limited development resources and so we typically focus on adding features that will have high impact to researchers using JAX MD (including us). Please don't hesitate to open feature requests to help us guide development. We more than welcome contributions!

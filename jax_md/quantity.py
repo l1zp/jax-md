@@ -18,7 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from jax import grad
+from jax import grad, vmap
 import jax.numpy as np
 
 from jax_md import space
@@ -90,6 +90,32 @@ def canonicalize_mass(mass):
   raise ValueError(msg)
 
 
+
+def angle_between_two_vectors(dR_12, dR_13):
+  dr_12 = space.distance(dR_12) + 1e-7
+  dr_13 = space.distance(dR_13) + 1e-7
+  cos_angle = np.dot(dR_12, dR_13) / dr_12 / dr_13
+  return np.clip(cos_angle, -1.0, 1.0)
+
+
+def cosine_angles(dR):
+  """Returns cosine of angles for all atom triplets.
+
+  Args:
+    dR: Matrix of displacements; ndarray(shape=[num_atoms, num_neighbors,
+      spatial_dim]).
+
+  Returns:
+    Tensor of cosine of angles;
+    ndarray(shape=[num_atoms, num_neighbors, num_neighbors]).
+  """
+
+
+  angles_between_all_triplets = vmap(
+      vmap(vmap(angle_between_two_vectors, (0, None)), (None, 0)), 0)
+  return angles_between_all_triplets(dR, dR)
+
+
 def pair_correlation(displacement_or_metric, rs, sigma):
   metric = space.canonicalize_displacement_or_metric(displacement_or_metric)
 
@@ -110,3 +136,12 @@ def pair_correlation(displacement_or_metric, rs, sigma):
     gaussian_distances = exp / np.sqrt(2 * np.pi * sigma ** 2)
     return np.mean(gaussian_distances, axis=1) / rs ** (dim - 1)
   return compute_fun
+
+
+def box_size_at_number_density(
+    particle_count, number_density, spatial_dimension):
+  return np.power(particle_count / number_density, 1 / spatial_dimension)
+
+
+def bulk_modulus(elastic_tensor):
+  return np.einsum('iijj->', elastic_tensor) / elastic_tensor.shape[0] ** 2
