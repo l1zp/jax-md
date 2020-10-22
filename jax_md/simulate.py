@@ -30,25 +30,42 @@
   can be used for testing purposes, but is not often used otherwise.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from collections import namedtuple
+
+from typing import Callable, TypeVar, Union, Tuple
 
 from jax import ops
 from jax import random
 import jax.numpy as np
 
-from jax_md import quantity
-from jax_md import interpolate
+from jax_md import quantity, interpolate, util, space, dataclasses
 
-from jax_md.util import *
+static_cast = util.static_cast
 
 
-class NVEState(namedtuple(
-    'NVEState', ['position', 'velocity', 'acceleration', 'mass'])):
-  """A tuple containing the state of an NVE simulation.
+# Types
+
+
+Array = util.Array
+f32 = util.f32
+f64 = util.f64
+
+ShiftFn = space.ShiftFn
+
+T = TypeVar('T')
+InitFn = Callable[..., T]
+ApplyFn = Callable[[T], T]
+Simulator = Tuple[InitFn, ApplyFn]
+
+Schedule = Union[Callable[..., float], float]
+
+
+# Constant Energy Simulations
+
+
+@dataclasses.dataclass
+class NVEState:
+  """A struct containing the state of an NVE simulation.
 
   This tuple stores the state of a simulation that samples from the
   microcanonical ensemble in which the (N)umber of particles, the (V)olume, and
@@ -64,15 +81,16 @@ class NVEState(namedtuple(
     mass: A float or an ndarray of shape [n] containing the masses of the
       particles.
   """
-
-  def __new__(cls, position, velocity, acceleration, mass):
-    return super(NVEState, cls).__new__(
-        cls, position, velocity, acceleration, mass)
-register_pytree_namedtuple(NVEState)
+  position: Array
+  velocity: Array
+  acceleration: Array
+  mass: Array
 
 
 # pylint: disable=invalid-name
-def nve(energy_or_force, shift_fn, dt, quant=quantity.Energy):
+def nve(energy_or_force: Callable[..., Array],
+        shift_fn: ShiftFn,
+        dt: float) -> Simulator:
   """Simulates a system in the NVE ensemble.
 
   Samples from the microcanonical ensemble in which the number of particles (N),
@@ -92,34 +110,32 @@ def nve(energy_or_force, shift_fn, dt, quant=quantity.Energy):
   Returns:
     See above.
   """
-  force = quantity.canonicalize_force(energy_or_force, quant)
+  force = quantity.canonicalize_force(energy_or_force)
 
   dt, = static_cast(dt)
   dt_2, = static_cast(0.5 * dt ** 2)
-  def init_fun(key, R, velocity_scale=f32(1.0), mass=f32(1.0), **kwargs):
+  def init_fun(key: Array,
+               R: Array,
+               velocity_scale: float=f32(1.0),
+               mass=f32(1.0),
+               **kwargs) -> NVEState:
     V = np.sqrt(velocity_scale) * random.normal(key, R.shape, dtype=R.dtype)
     mass = quantity.canonicalize_mass(mass)
-    return NVEState(R, V, force(R, **kwargs) / mass, mass)
-  def apply_fun(state, t=f32(0), **kwargs):
-    R, V, A, mass = state
+    return NVEState(R, V, force(R, **kwargs) / mass, mass)  # pytype: disable=wrong-arg-count
+  def apply_fun(state: NVEState, t: float=f32(0), **kwargs) -> NVEState:
+    R, V, A, mass = dataclasses.astuple(state)
     R = shift_fn(R, V * dt + A * dt_2, t=t, **kwargs)
     A_prime = force(R, t=t, **kwargs) / mass
     V = V + f32(0.5) * (A + A_prime) * dt
-    return NVEState(R, V, A_prime, mass)
+    return NVEState(R, V, A_prime, mass)  # pytype: disable=wrong-arg-count
   return init_fun, apply_fun
 
 
-class NVTNoseHooverState(namedtuple(
-    'NVTNoseHooverState',
-    [
-        'position',
-        'velocity',
-        'mass',
-        'kinetic_energy',
-        'xi',
-        'v_xi',
-        'Q',
-    ])):
+# Constant Temperature Simulations
+
+
+@dataclasses.dataclass
+class NVTNoseHooverState:
   """A tuple containing state information for the Nose-Hoover chain thermostat.
 
   Attributes:
@@ -138,16 +154,21 @@ class NVTNoseHooverState(namedtuple(
     Q: An ndarray of shape [chain_length] that stores the mass of the
       Nose-Hoover chain.
   """
+  position: Array
+  velocity: Array
+  mass: Array
+  kinetic_energy: Array
+  xi: Array
+  v_xi: Array
+  Q: Array
 
-  def __new__(cls, position, velocity, mass, kinetic_energy, xi, v_xi, Q):
-    return super(NVTNoseHooverState, cls).__new__(
-        cls, position, velocity, mass, kinetic_energy, xi, v_xi, Q)
-register_pytree_namedtuple(NVTNoseHooverState)
 
-
-def nvt_nose_hoover(
-    energy_or_force, shift_fn, dt, T_schedule, quant=quantity.Energy,
-    chain_length=5, tau=100.0):
+def nvt_nose_hoover(energy_or_force: Callable[..., Array],
+                    shift_fn: ShiftFn,
+                    dt: float,
+                    T_schedule: Schedule,
+                    chain_length: int=5,
+                    tau: float=100.0) -> Simulator:
   """Simulation in the NVT ensemble using a Nose Hoover Chain thermostat.
 
   Samples from the canonical ensemble in which the number of particles (N),
@@ -191,7 +212,7 @@ def nvt_nose_hoover(
       Journal of Physics A: Mathematical and General 39, no. 19 (2006): 5629.
   """
 
-  force = quantity.canonicalize_force(energy_or_force, quant)
+  force = quantity.canonicalize_force(energy_or_force)
 
   tau = tau * dt
   dt_2 = dt / 2.0
@@ -201,7 +222,10 @@ def nvt_nose_hoover(
 
   T_schedule = interpolate.canonicalize(T_schedule)
 
-  def init_fun(key, R, mass=f32(1.0), T_initial=f32(1.0)):
+  def init_fun(key, R, mass=f32(1.0), T_initial=None):
+    if T_initial is None:
+      T_initial = T_schedule(0.0)
+
     mass = quantity.canonicalize_mass(mass)
     V = np.sqrt(T_initial / mass) * random.normal(key, R.shape, dtype=R.dtype)
     V = V - np.mean(V, axis=0, keepdims=True)
@@ -217,7 +241,7 @@ def nvt_nose_hoover(
     Q = T_initial * tau ** f32(2) * np.ones(chain_length, dtype=R.dtype)
     Q = ops.index_update(Q, 0, Q[0] * DOF)
 
-    return NVTNoseHooverState(R, V, mass, KE, xi, v_xi, Q)
+    return NVTNoseHooverState(R, V, mass, KE, xi, v_xi, Q)  # pytype: disable=wrong-arg-count
   def step_chain(KE, V, xi, v_xi, Q, DOF, T):
     """Applies a single update to the chain parameters and rescales velocity."""
     M = chain_length - 1
@@ -248,7 +272,7 @@ def nvt_nose_hoover(
   def apply_fun(state, t=f32(0), **kwargs):
     T = T_schedule(t)
 
-    R, V, mass, KE, xi, v_xi, Q = state
+    R, V, mass, KE, xi, v_xi, Q = dataclasses.astuple(state)
 
     DOF, = static_cast(R.shape[0] * R.shape[1])
 
@@ -268,21 +292,14 @@ def nvt_nose_hoover(
 
     KE, V, xi, v_xi = step_chain(KE, V, xi, v_xi, Q, DOF, T)
 
-    return NVTNoseHooverState(R, V, mass, KE, xi, v_xi, Q)
+    return NVTNoseHooverState(R, V, mass, KE, xi, v_xi, Q)  # pytype: disable=wrong-arg-count
 
   return init_fun, apply_fun
 
 
-class NVTLangevinState(namedtuple(
-    'NVTLangevinState',
-    [
-        'position',
-        'velocity',
-        'force',
-        'mass',
-        'rng'
-    ])):
-  """A tuple containing state information for the Langevin thermostat.
+@dataclasses.dataclass
+class NVTLangevinState:
+  """A struct containing state information for the Langevin thermostat.
 
   Attributes:
     position: The current position of the particles. An ndarray of floats with
@@ -295,19 +312,17 @@ class NVTLangevinState(namedtuple(
       with shape [n].
     rng: The current state of the random number generator.
   """
-  def __new__(cls, position, velocity, force, mass, rng):
-    return super(NVTLangevinState, cls).__new__(
-        cls, position, velocity, force, mass, rng)
-register_pytree_namedtuple(NVTLangevinState)
+  position: Array
+  velocity: Array
+  force: Array
+  mass: Array
+  rng: Array
 
-
-def nvt_langevin(
-    energy_or_force,
-    shift,
-    dt,
-    T_schedule,
-    quant=quantity.Energy,
-    gamma=0.1):
+def nvt_langevin(energy_or_force: Callable[..., Array],
+                 shift: ShiftFn,
+                 dt: float,
+                 T_schedule: Schedule,
+                 gamma: float=0.1) -> Simulator:
   """Simulation in the NVT ensemble using the Langevin thermostat.
 
   Samples from the canonical ensemble in which the number of particles (N),
@@ -342,7 +357,7 @@ def nvt_langevin(
         Accessed on 06/05/2019.
   """
 
-  force_fn = quantity.canonicalize_force(energy_or_force, quant)
+  force_fn = quantity.canonicalize_force(energy_or_force)
 
   dt_2 = dt / 2
   dt2 = dt ** 2 / 2
@@ -352,7 +367,10 @@ def nvt_langevin(
 
   T_schedule = interpolate.canonicalize(T_schedule)
 
-  def init_fn(key, R, mass=f32(1), T_initial=f32(1), **kwargs):
+  def init_fn(key, R, mass=f32(1), T_initial=None, **kwargs):
+    if T_initial is None:
+      T_initial = T_schedule(0.0)
+
     mass = quantity.canonicalize_mass(mass)
 
     key, split = random.split(key)
@@ -360,10 +378,10 @@ def nvt_langevin(
     V = np.sqrt(T_initial / mass) * random.normal(split, R.shape, dtype=R.dtype)
     V = V - np.mean(V, axis=0, keepdims=True)
 
-    return NVTLangevinState(R, V, force_fn(R, t=f32(0), **kwargs), mass, key)
+    return NVTLangevinState(R, V, force_fn(R, t=f32(0), **kwargs), mass, key)  # pytype: disable=wrong-arg-count
 
   def apply_fn(state, t=f32(0), **kwargs):
-    R, V, F, mass, key = state
+    R, V, F, mass, key = dataclasses.astuple(state)
 
     N, dim = R.shape
 
@@ -383,17 +401,12 @@ def nvt_langevin(
     V = (f32(1) - dt * gamma) * V + dt_2 * (F_new + F)
     V = V + sigma * np.sqrt(dt) * xi - gamma * C
 
-    return NVTLangevinState(R, V, F_new, mass, key)
+    return NVTLangevinState(R, V, F_new, mass, key)  # pytype: disable=wrong-arg-count
   return init_fn, apply_fn
 
 
-class BrownianState(namedtuple(
-    'NVTLangevinState',
-    [
-        'position',
-        'mass',
-        'rng'
-    ])):
+@dataclasses.dataclass
+class BrownianState:
   """A tuple containing state information for Brownian dynamics.
 
   Attributes:
@@ -403,18 +416,16 @@ class BrownianState(namedtuple(
       with shape [n].
     rng: The current state of the random number generator.
   """
-  def __new__(cls, position, mass, rng):
-    return super(BrownianState, cls).__new__(cls, position, mass, rng)
-register_pytree_namedtuple(BrownianState)
+  position: Array
+  mass: Array
+  rng: Array
 
 
-def brownian(
-    energy_or_force,
-    shift,
-    dt,
-    T_schedule,
-    quant=quantity.Energy,
-    gamma=0.1):
+def brownian(energy_or_force: Callable[..., Array],
+             shift: ShiftFn,
+             dt: float,
+             T_schedule: Schedule,
+             gamma: float=0.1) -> Simulator:
   """Simulation of Brownian dynamics.
 
   This code simulates Brownian dynamics which are synonymous with the overdamped
@@ -434,7 +445,7 @@ def brownian(
         Accessed on 06/05/2019.
   """
 
-  force_fn = quantity.canonicalize_force(energy_or_force, quant)
+  force_fn = quantity.canonicalize_force(energy_or_force)
 
   dt, gamma = static_cast(dt, gamma)
 
@@ -443,11 +454,11 @@ def brownian(
   def init_fn(key, R, mass=f32(1)):
     mass = quantity.canonicalize_mass(mass)
 
-    return BrownianState(R, mass, key)
+    return BrownianState(R, mass, key)  # pytype: disable=wrong-arg-count
 
   def apply_fn(state, t=f32(0), **kwargs):
 
-    R, mass, key = state
+    R, mass, key = dataclasses.astuple(state)
 
     key, split = random.split(key)
 
@@ -459,6 +470,6 @@ def brownian(
     dR = F * dt * nu + np.sqrt(f32(2) * T_schedule(t) * dt * nu) * xi
     R = shift(R, dR, t=t, **kwargs)
 
-    return BrownianState(R, mass, key)
+    return BrownianState(R, mass, key)  # pytype: disable=wrong-arg-count
 
   return init_fn, apply_fn

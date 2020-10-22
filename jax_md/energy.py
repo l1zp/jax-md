@@ -14,36 +14,57 @@
 
 """Definitions of various standard energy functions."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from functools import wraps, partial
+
+from typing import Callable, Tuple, TextIO, Dict, Any, Optional
 
 import jax
 import jax.numpy as np
 from jax.tree_util import tree_map
 from jax import vmap
 import haiku as hk
-from jax.scipy.special import erfc #error function
-from jax_md import space, smap, partition, nn
-from jax_md.interpolate import spline
-from jax_md.util import f32, f64
-from jax_md.util import check_kwargs_time_dependence
+from jax.scipy.special import erfc  # error function
+from jax_md import space, smap, partition, nn, quantity, interpolate, util
 
 
-def simple_spring(dr, length=1, epsilon=1, alpha=2, **unused_kwargs):
+# Types
+
+
+f32 = util.f32
+f64 = util.f64
+Array = util.Array
+
+PyTree = Any
+Box = space.Box
+DisplacementFn = space.DisplacementFn
+DisplacementOrMetricFn = space.DisplacementOrMetricFn
+
+NeighborFn = partition.NeighborFn
+NeighborList = partition.NeighborList
+
+
+# Energy Functions
+
+
+def simple_spring(dr: Array,
+                  length: Array=1,
+                  epsilon: Array=1,
+                  alpha: Array=2,
+                  **unused_kwargs) -> Array:
   """Isotropic spring potential with a given rest length.
 
   We define `simple_spring` to be a generalized Hookian spring with
   agreement when alpha = 2.
   """
-  check_kwargs_time_dependence(unused_kwargs)
   return epsilon / alpha * (dr - length) ** alpha
 
 
-def simple_spring_bond(
-    displacement_or_metric, bond, bond_type=None, length=1, epsilon=1, alpha=2):
+def simple_spring_bond(displacement_or_metric: DisplacementOrMetricFn,
+                       bond: Array,
+                       bond_type: Array=None,
+                       length: Array=1,
+                       epsilon: Array=1,
+                       alpha: Array=2) -> Callable[[Array], Array]:
   """Convenience wrapper to compute energy of particles bonded by springs."""
   length = np.array(length, f32)
   epsilon = np.array(epsilon, f32)
@@ -58,7 +79,11 @@ def simple_spring_bond(
     alpha=alpha)
 
 
-def soft_sphere(dr, sigma=1, epsilon=1, alpha=2, **unused_kwargs):
+def soft_sphere(dr: Array,
+                sigma: Array=1,
+                epsilon: Array=1,
+                alpha: Array=2,
+                **unused_kwargs) -> Array:
   """Finite ranged repulsive interaction between soft spheres.
 
   Args:
@@ -73,20 +98,18 @@ def soft_sphere(dr, sigma=1, epsilon=1, alpha=2, **unused_kwargs):
   Returns:
     Matrix of energies whose shape is [n, m].
   """
-  check_kwargs_time_dependence(unused_kwargs)
   dr = dr / sigma
   U = epsilon * np.where(
     dr < 1.0, f32(1.0) / alpha * (f32(1.0) - dr) ** alpha, f32(0.0))
   return U
 
 
-def soft_sphere_pair(
-    displacement_or_metric,
-    species=None,
-    sigma=1.0,
-    epsilon=1.0,
-    alpha=2.0,
-    per_particle=False):
+def soft_sphere_pair(displacement_or_metric: DisplacementOrMetricFn,
+                     species: Array=None,
+                     sigma: Array=1.0,
+                     epsilon: Array=1.0,
+                     alpha: Array=2.0,
+                     per_particle: bool=False):
   """Convenience wrapper to compute soft sphere energy over a system."""
   sigma = np.array(sigma, dtype=f32)
   epsilon = np.array(epsilon, dtype=f32)
@@ -101,15 +124,16 @@ def soft_sphere_pair(
       reduce_axis=(1,) if per_particle else None)
 
 
-def soft_sphere_neighbor_list(
-    displacement_or_metric,
-    box_size,
-    species=None,
-    sigma=1.0,
-    epsilon=1.0,
-    alpha=2.0,
-    dr_threshold=0.2,
-    per_particle=False):
+def soft_sphere_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
+                              box_size: Box,
+                              species: Array=None,
+                              sigma: Array=1.0,
+                              epsilon: Array=1.0,
+                              alpha: Array=2.0,
+                              dr_threshold: float=0.2,
+                              per_particle: bool=False
+                              ) -> Tuple[NeighborFn,
+                                         Callable[[Array, NeighborList], Array]]:
   """Convenience wrapper to compute soft spheres using a neighbor list."""
   sigma = np.array(sigma, dtype=f32)
   epsilon = np.array(epsilon, dtype=f32)
@@ -131,7 +155,10 @@ def soft_sphere_neighbor_list(
   return neighbor_fn, energy_fn
 
 
-def lennard_jones(dr, sigma=1, epsilon=1, **unused_kwargs):
+def lennard_jones(dr: Array,
+                  sigma: Array=1,
+                  epsilon: Array=1,
+                  **unused_kwargs) -> Array:
   """Lennard-Jones interaction between particles with a minimum at sigma.
 
   Args:
@@ -144,7 +171,6 @@ def lennard_jones(dr, sigma=1, epsilon=1, **unused_kwargs):
   Returns:
     Matrix of energies of shape [n, m].
   """
-  check_kwargs_time_dependence(unused_kwargs)
   idr = (sigma / dr)
   idr = idr * idr
   idr6 = idr * idr * idr
@@ -154,14 +180,13 @@ def lennard_jones(dr, sigma=1, epsilon=1, **unused_kwargs):
   return np.nan_to_num(f32(4) * epsilon * (idr12 - idr6))
 
 
-def lennard_jones_pair(
-    displacement_or_metric,
-    species=None,
-    sigma=1.0,
-    epsilon=1.0,
-    r_onset=2.0,
-    r_cutoff=2.5,
-    per_particle=False):
+def lennard_jones_pair(displacement_or_metric: DisplacementOrMetricFn,
+                       species: Array=None,
+                       sigma: Array=1.0,
+                       epsilon: Array=1.0,
+                       r_onset: Array=2.0,
+                       r_cutoff: Array=2.5,
+                       per_particle: bool=False) -> Callable[[Array], Array]:
   """Convenience wrapper to compute Lennard-Jones energy over a system."""
   sigma = np.array(sigma, dtype=f32)
   epsilon = np.array(epsilon, dtype=f32)
@@ -176,17 +201,19 @@ def lennard_jones_pair(
     reduce_axis=(1,) if per_particle else None)
 
 
-def lennard_jones_neighbor_list(
-    displacement_or_metric,
-    box_size,
-    species=None,
-    sigma=1.0,
-    epsilon=1.0,
-    alpha=2.0,
-    r_onset=2.0,
-    r_cutoff=2.5,
-    dr_threshold=0.5,
-    per_particle=False): # TODO(schsam) Optimize this.
+def lennard_jones_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
+                                box_size: Box,
+                                species: Array=None,
+                                sigma: Array=1.0,
+                                epsilon: Array=1.0,
+                                alpha: Array=2.0,
+                                r_onset: float=2.0,
+                                r_cutoff: float=2.5,
+                                dr_threshold: float=0.5,
+                                per_particle: bool=False
+                                ) -> Tuple[NeighborFn,
+                                           Callable[[Array, NeighborList],
+                                                    Array]]:
   """Convenience wrapper to compute lennard-jones using a neighbor list."""
   sigma = np.array(sigma, f32)
   epsilon = np.array(epsilon, f32)
@@ -207,7 +234,11 @@ def lennard_jones_neighbor_list(
   return neighbor_fn, energy_fn
 
 
-def morse(dr, sigma=1.0, epsilon=5.0, alpha=5.0, **unused_kwargs):
+def morse(dr: Array,
+          sigma: Array=1.0,
+          epsilon: Array=5.0,
+          alpha: Array=5.0,
+          **unused_kwargs) -> Array:
   """Morse interaction between particles with a minimum at r0.
   Args:
     dr: An ndarray of shape [n, m] of pairwise distances between particles.
@@ -221,20 +252,18 @@ def morse(dr, sigma=1.0, epsilon=5.0, alpha=5.0, **unused_kwargs):
   Returns:
     Matrix of energies of shape [n, m].
   """
-  check_kwargs_time_dependence(unused_kwargs)
   U = epsilon * (f32(1) - np.exp(-alpha * (dr - sigma)))**f32(2) - epsilon
   # TODO(cpgoodri): ErrorChecking following lennard_jones
   return np.nan_to_num(np.array(U, dtype=dr.dtype))
 
-def morse_pair(
-    displacement_or_metric,
-    species=None,
-    sigma=1.0,
-    epsilon=5.0,
-    alpha=5.0,
-    r_onset=2.0,
-    r_cutoff=2.5,
-    per_particle=False):
+def morse_pair(displacement_or_metric: DisplacementOrMetricFn,
+               species: Array=None,
+               sigma: Array=1.0,
+               epsilon: Array=5.0,
+               alpha: Array=5.0,
+               r_onset: float=2.0,
+               r_cutoff: float=2.5,
+               per_particle: bool=False) -> Callable[[Array], Array]:
   """Convenience wrapper to compute Morse energy over a system."""
   sigma = np.array(sigma, dtype=f32)
   epsilon = np.array(epsilon, dtype=f32)
@@ -248,17 +277,19 @@ def morse_pair(
     alpha=alpha,
     reduce_axis=(1,) if per_particle else None)
 
-def morse_neighbor_list(
-    displacement_or_metric,
-    box_size,
-    species=None,
-    sigma=1.0,
-    epsilon=5.0,
-    alpha=5.0,
-    r_onset=2.0,
-    r_cutoff=2.5,
-    dr_threshold=0.5,
-    per_particle=False): # TODO(cpgoodri) Optimize this.
+
+def morse_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
+                        box_size: Box,
+                        species: Array=None,
+                        sigma: Array=1.0,
+                        epsilon: Array=5.0,
+                        alpha: Array=5.0,
+                        r_onset: float=2.0,
+                        r_cutoff: float=2.5,
+                        dr_threshold: float=0.5,
+                        per_particle: bool=False
+                        ) -> Tuple[NeighborFn,
+                                   Callable[[Array, NeighborList], Array]]: 
   """Convenience wrapper to compute Morse using a neighbor list."""
   sigma = np.array(sigma, f32)
   epsilon = np.array(epsilon, f32)
@@ -281,14 +312,43 @@ def morse_neighbor_list(
   return neighbor_fn, energy_fn
 
 
-def gupta_potential(displacement, 
-                    p=10.15, 
-                    q=4.13, 
-                    r_0n=2.96, 
-                    U_n =3.454, 
-                    A=0.118428,
-                    cutoff=8.0):
-  """Gupta potential with default parameters for Au_55 cluster."""
+def gupta_potential(displacement,
+                    p,
+                    q,
+                    r_0n,
+                    U_n,
+                    A,
+                    cutoff):
+  """Gupta potential with default parameters for Au_55 cluster. Gupta
+  potential was introduced by R. P. Gupta [1]. This potential uses parameters
+  that were fit for bulk gold by Jellinek [2]. This particular implementation 
+  of the Gupta potential was introduced by Garzon and Posada-Amarillas [3]. 
+  
+  Args: 
+    displacement: Function to compute displacement between two positions.
+    p: Gupta potential parameter of the repulsive term that was fitted for 
+    bulk gold.
+    q: Gupta potential parameter of the attractive term that was fitted for 
+    bulk gold.
+    r_0n: Parameter that determines the length scale of the potential. This
+    value was particularly fit for gold clusters of size 55 atoms.
+    U_n: Parameter that determines the energy scale, fit particularly for
+    gold clusters of size 55 atoms.
+    A: Parameter that was obtained using the cohesive energy of the fcc gold 
+    metal.
+    cutoff: Pairwise interactions that are farther than the cutoff distance
+    will be ignored.
+  
+  Returns:
+    A function that takes in positions of gold atoms (shape [n, 3] where n is 
+    the number of atoms) and returns the total energy of the system in units 
+    of eV.
+
+  [1] R.P. Gupta, Phys. Rev. B 23, 6265 (1981)
+  [2] J. Jellinek, in Metal-Ligand Interactions, edited by N. Russo and
+  D. R. Salahub (Kluwer Academic, Dordrecht, 1996), p. 325.
+  [3] I. L. Garzon, A. Posada-Amarillas, Phys. Rev. B 54, 16 (1996)
+  """
   def _gupta_term1(r, p, r_0n, cutoff):
     """Repulsive term in Gupta potential."""
     within_cutoff = (r > 0) & (r < cutoff)
@@ -305,15 +365,32 @@ def gupta_potential(displacement,
     dR = space.map_product(displacement)(R, R)
     dr = space.distance(dR)
     first_term = A * np.sum(_gupta_term1(dr, p, r_0n, cutoff), axis=1)
-    second_term = np.sqrt(np.sum(_gupta_term2(dr, 
-                                              q, 
-                                              r_0n, 
-                                              cutoff), axis=1))
-    return U_n / 2.0 * np.sum( first_term - second_term)
+    second_term = np.sqrt(np.sum(_gupta_term2(dr, q, r_0n, cutoff), axis=1))
+    return U_n / 2.0 * np.sum(first_term - second_term)
 
   return compute_fn
 
-def multiplicative_isotropic_cutoff(fn, r_onset, r_cutoff):
+
+GUPTA_GOLD55_DICT = {
+    'p' : 10.15,
+    'q' : 4.13,
+    'r_0n' : 2.96,
+    'U_n' : 3.454,
+    'A' : 0.118428,
+}
+
+def gupta_gold55(displacement,
+                 cutoff=8.0):
+  gupta_gold_fn = gupta_potential(displacement,
+                                  cutoff=cutoff,
+                                  **GUPTA_GOLD55_DICT)
+  def energy_fn(R, **unused_kwargs):
+    return gupta_gold_fn(R)
+  return energy_fn
+
+def multiplicative_isotropic_cutoff(fn: Callable[..., Array],
+                                    r_onset: float,
+                                    r_cutoff: float) -> Callable[..., Array]:
   """Takes an isotropic function and constructs a truncated function.
 
   Given a function f:R -> R, we construct a new function f':R -> R such that
@@ -343,16 +420,11 @@ def multiplicative_isotropic_cutoff(fn, r_onset, r_cutoff):
   def smooth_fn(dr):
     r = dr ** f32(2)
 
-    return np.where(
-      dr < r_onset,
-      f32(1),
-      np.where(
-        dr < r_cutoff,
-        (r_c - r) ** f32(2) * (r_c + f32(2) * r - f32(3) * r_o) / (
-          r_c - r_o) ** f32(3),
-        f32(0)
-      )
-    )
+    inner = np.where(dr < r_cutoff,
+                     (r_c - r)**2 * (r_c + 2 * r - 3 * r_o) / (r_c - r_o)**3,
+                     0)
+
+    return np.where(dr < r_onset, 1, inner)
 
   @wraps(fn)
   def cutoff_fn(dr, *args, **kwargs):
@@ -361,8 +433,12 @@ def multiplicative_isotropic_cutoff(fn, r_onset, r_cutoff):
   return cutoff_fn
 
 
-def dsf_coulomb(r, Q_sq, alpha=0.25, cutoff=8.0):
-  qqr2e = 332.06371 #coulmbic conversion factor:1/(4*pi*epo)
+def dsf_coulomb(r: Array,
+                Q_sq: Array,
+                alpha: Array=0.25,
+                cutoff: float=8.0) -> Array:
+  """Damped-shifted-force approximation of the coulombic interaction."""
+  qqr2e = 332.06371  # Coulmbic conversion factor: 1/(4*pi*epo).
 
   cutoffsq = cutoff*cutoff
   erfcc = erfc(alpha*cutoff)
@@ -373,15 +449,60 @@ def dsf_coulomb(r, Q_sq, alpha=0.25, cutoff=8.0):
   coulomb_en = qqr2e*Q_sq/r * (erfc(alpha*r) - r*e_shift - r**2*f_shift)
   return np.where(r < cutoff, coulomb_en, 0.0)
 
-def bks(r, Q_sq, exp_coeff, exp_decay, attractive_coeff, repulsive_coeff, 
-        coulomb_alpha, cutoff, **unused_kwargs):
-  energy = (dsf_coulomb(r, Q_sq, coulomb_alpha, cutoff) + \
-          exp_coeff * np.exp(-r / exp_decay) + \
-          attractive_coeff / r ** 6 + repulsive_coeff / r ** 24)
-  return  np.where(r < cutoff, energy, 0.0)
 
-def bks_pair(displacement_or_metric, species, Q_sq, exp_coeff, exp_decay, 
-             attractive_coeff, repulsive_coeff, coulomb_alpha, cutoff):
+def bks(dr: Array,
+        Q_sq: Array,
+        exp_coeff: Array,
+        exp_decay: Array,
+        attractive_coeff: Array,
+        repulsive_coeff: Array,
+        coulomb_alpha: Array,
+        cutoff: float,
+        **unused_kwargs) -> Array:
+  """Beest-Kramer-van Santen (BKS) potential[1] which is commonly used to 
+  model silicas. This function computes the interaction between two 
+  given atoms within the Buckingham form[2], following the implementation
+  from Ref. [3]
+  Args:
+    dr: An ndarray of shape [n, m] of pairwise distances between particles.
+    Q_sq: An ndarray of shape [n, m] of pairwise product of partial charges. 
+    exp_coeff: An ndarray of shape [n, m] that sets the scale of the
+    exponential decay of the short-range interaction.
+    attractive_coeff: An ndarray of shape [n, m] for the coefficient of the 
+    attractive 6th order term.
+    repulsive_coeff: An ndarray of shape [n, m] for the coefficient of the
+    repulsive 24th order term, to prevent the unphysical fusion of atoms.
+    coulomb_alpha: Damping parameter for the approximation of the long-range
+    coulombic interactions (a scalar).
+    cutoff: Cutoff distance for considering pairwise interactions.
+    unused_kwargs: Allows extra data (e.g. time) to be passed to the energy.
+  Returns:
+    Matrix of energies of shape [n, m].
+  [1] Van Beest, B. W. H., Gert Jan Kramer, and R. A. Van Santen. "Force fields
+  for silicas and aluminophosphates based on ab initio calculations." Physical 
+  Review Letters 64.16 (1990): 1955. 
+  [2] Carré, Antoine, et al. "Developing empirical potentials from ab initio 
+  simulations: The case of amorphous silica." Computational Materials Science 
+  124 (2016): 323-334.
+  [3] Liu, Han, et al. "Machine learning Forcefield for silicate glasses." 
+  arXiv preprint arXiv:1902.03486 (2019).
+  """
+  energy = (dsf_coulomb(dr, Q_sq, coulomb_alpha, cutoff) + \
+            exp_coeff * np.exp(-dr / exp_decay) + \
+            attractive_coeff / dr ** 6 + repulsive_coeff / dr ** 24)
+  return  np.where(dr < cutoff, energy, 0.0)
+
+
+def bks_pair(displacement_or_metric: DisplacementOrMetricFn,
+             species: Array,
+             Q_sq: Array,
+             exp_coeff: Array,
+             exp_decay: Array,
+             attractive_coeff: Array,
+             repulsive_coeff: Array,
+             coulomb_alpha: Array,
+             cutoff: float) -> Callable[[Array], Array]:
+  """Convenience wrapper to compute BKS energy over a system."""
   Q_sq = np.array(Q_sq, f32)
   exp_coeff = np.array(exp_coeff, f32)
   exp_decay = np.array(exp_decay, f32)
@@ -398,17 +519,21 @@ def bks_pair(displacement_or_metric, species, Q_sq, exp_coeff, exp_decay,
                    coulomb_alpha=coulomb_alpha,
                    cutoff=cutoff)
   
-def bks_neighbor_list(displacement_or_metric, 
-                      box_size, 
-                      species, 
-                      Q_sq, 
-                      exp_coeff, 
-                      exp_decay, 
-                      attractive_coeff, 
-                      repulsive_coeff, 
-                      coulomb_alpha, 
-                      cutoff,
-                      dr_threshold=0.8):
+
+def bks_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
+                      box_size: Box, 
+                      species: Array, 
+                      Q_sq: Array, 
+                      exp_coeff: Array, 
+                      exp_decay: Array, 
+                      attractive_coeff: Array, 
+                      repulsive_coeff: Array, 
+                      coulomb_alpha: Array, 
+                      cutoff: float,
+                      dr_threshold: float=0.8
+                      ) -> Tuple[NeighborFn,
+                                 Callable[[Array, NeighborList], Array]]:
+  """Convenience wrapper to compute BKS energy using a neighbor list."""
   Q_sq = np.array(Q_sq, f32)
   exp_coeff = np.array(exp_coeff, f32)
   exp_decay = np.array(exp_decay, f32)
@@ -433,6 +558,9 @@ def bks_neighbor_list(displacement_or_metric,
   
   return neighbor_fn, energy_fn
 
+# BKS Potential Parameters.
+# Coefficients given in kcal/mol.
+
 CHARGE_OXYGEN = -0.977476019
 CHARGE_SILICON = 1.954952037
 
@@ -448,10 +576,10 @@ BKS_SILICA_DICT = {
     'repulsive_coeff' : [[78940848.06, 668.7557239],
                          [668.7557239, 2605.841269]],
     'coulomb_alpha' : 0.25,
-    'cutoff' : 8.0, 
-} #all the parameter(coefficient)kcal/mol
+}
                    
-def _bks_silica_self(Q_sq, alpha, cutoff):
+def _bks_silica_self(Q_sq: Array, alpha: Array, cutoff: float) -> Array:
+  """Function for computing the self-energy contributions to BKS."""
   cutoffsq = cutoff * cutoff
   erfcc = erfc(alpha * cutoff)
   erfcd = np.exp(-alpha * alpha * cutoffsq)
@@ -460,14 +588,18 @@ def _bks_silica_self(Q_sq, alpha, cutoff):
   qqr2e = 332.06371 #kcal/mol #coulmbic conversion factor:1/(4*pi*epo)
   return -(e_shift / 2.0 + alpha / np.sqrt(np.pi)) * Q_sq * qqr2e
 
-def bks_silica_pair(displacement_or_metric, species):
+def bks_silica_pair(displacement_or_metric: DisplacementOrMetricFn,
+                    species: Array,
+                    cutoff: float=8.0):
+  """Convenience wrapper to compute BKS energy for SiO2."""
   bks_pair_fn = bks_pair(displacement_or_metric, 
-                         species, 
+                         species,
+                         cutoff=cutoff,
                          **BKS_SILICA_DICT)
   N_0 = np.sum(species==0)
   N_1 = np.sum(species==1)
 
-  e_self = partial(_bks_silica_self, alpha=0.25, cutoff=8.0)
+  e_self = partial(_bks_silica_self, alpha=0.25, cutoff=cutoff)
 
   def energy_fn(R, **unused_kwargs):
     return (bks_pair_fn(R) +
@@ -477,18 +609,24 @@ def bks_silica_pair(displacement_or_metric, species):
 
   return energy_fn
 
-def bks_silica_neighbor_list(displacement_or_metric,
-                             box_size,
-                             species):
+
+def bks_silica_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
+                             box_size: Box,
+                             species: Array,
+                             cutoff: float=8.0
+                             ) -> Tuple[NeighborFn,
+                                        Callable[[Array, NeighborList], Array]]:
+  """Convenience wrapper to compute BKS energy over a system using neighbor lists."""
   neighbor_fn, bks_pair_fn = bks_neighbor_list(displacement_or_metric,
                                                box_size,
                                                species,
+                                               cutoff=cutoff,
                                                dr_threshold=0.8,
                                                **BKS_SILICA_DICT)
   N_0 = np.sum(species==0)
   N_1 = np.sum(species==1)
 
-  e_self = partial(_bks_silica_self, alpha=0.25, cutoff=8.0)
+  e_self = partial(_bks_silica_self, alpha=0.25, cutoff=cutoff)
 
   def energy_fn(R, neighbor, **unused_kwargs):
     return (bks_pair_fn(R, neighbor) +
@@ -498,7 +636,13 @@ def bks_silica_neighbor_list(displacement_or_metric,
   return neighbor_fn, energy_fn
 
 
-def load_lammps_eam_parameters(f):
+# Embedded Atom Method
+
+
+def load_lammps_eam_parameters(file: TextIO) -> Tuple[Callable[[Array], Array],
+                                                      Callable[[Array], Array],
+                                                      Callable[[Array], Array],
+                                                      float]:
   """Reads EAM parameters from a LAMMPS file and returns relevant spline fits.
 
   This function reads single-element EAM potential fit parameters from a file
@@ -528,7 +672,7 @@ def load_lammps_eam_parameters(f):
       and returns an ndarray of shape [n, m] of pairwise energies.
     cutoff: Cutoff distance for the embedding_fn and pairwise_fn.
   """
-  raw_text = f.read().split('\n')
+  raw_text = file.read().split('\n')
   if 'setfl' not in raw_text[0]:
     raise ValueError('File format is incorrect, expected LAMMPS setfl format.')
   temp_params = raw_text[4].split()
@@ -536,21 +680,25 @@ def load_lammps_eam_parameters(f):
   drho, dr, cutoff = float(temp_params[1]), float(temp_params[3]), float(
       temp_params[4])
   data = np.array(map(float, raw_text[6:-1]))
-  embedding_fn = spline(data[:num_drho], drho)
-  charge_fn = spline(data[num_drho:num_drho + num_dr], dr)
+  embedding_fn = interpolate.spline(data[:num_drho], drho)
+  charge_fn = interpolate.spline(data[num_drho:num_drho + num_dr], dr)
   # LAMMPS EAM parameters file lists pairwise energies after multiplying by
   # distance, in units of eV*Angstrom. We divide the energy by distance below,
   distances = np.arange(num_dr) * dr
   # Prevent dividing by zero at zero distance, which will not
   # affect the calculation
   distances = np.where(distances == 0, f32(0.001), distances)
-  pairwise_fn = spline(
+  pairwise_fn = interpolate.spline(
       data[num_dr + num_drho:num_drho + f32(2) * num_dr] / distances,
       dr)
   return charge_fn, embedding_fn, pairwise_fn, cutoff
 
 
-def eam(displacement, charge_fn, embedding_fn, pairwise_fn, axis=None):
+def eam(displacement: DisplacementFn,
+        charge_fn: Callable[[Array], Array],
+        embedding_fn: Callable[[Array], Array],
+        pairwise_fn: Callable[[Array], Array],
+        axis: Tuple[int, ...]=None) -> Callable[[Array], Array]:
   """Interatomic potential as approximated by embedded atom model (EAM).
 
   This code implements the EAM approximation to interactions between metallic
@@ -593,27 +741,30 @@ def eam(displacement, charge_fn, embedding_fn, pairwise_fn, axis=None):
 
   def energy(R, **kwargs):
     dr = metric(R, R, **kwargs)
-    total_charge = smap._high_precision_sum(charge_fn(dr), axis=1)
+    total_charge = util.high_precision_sum(charge_fn(dr), axis=1)
     embedding_energy = embedding_fn(total_charge)
-    pairwise_energy = smap._high_precision_sum(smap._diagonal_mask(
+    pairwise_energy = util.high_precision_sum(smap._diagonal_mask(
         pairwise_fn(dr)), axis=1) / f32(2.0)
-    return smap._high_precision_sum(
+    return util.high_precision_sum(
         embedding_energy + pairwise_energy, axis=axis)
 
   return energy
 
 
-def eam_from_lammps_parameters(displacement, f):
+def eam_from_lammps_parameters(displacement: DisplacementFn,
+                               f: TextIO) -> Callable[[Array], Array]:
   """Convenience wrapper to compute EAM energy over a system."""
   return eam(displacement, *load_lammps_eam_parameters(f)[:-1])
 
 
-def behler_parrinello(displacement,
-                      species=None,
-                      mlp_sizes=(30, 30), 
-                      mlp_kwargs=None, 
-                      sym_kwargs=None,
-                      per_particle=False):
+def behler_parrinello(displacement: DisplacementFn,
+                      species: Array=None,
+                      mlp_sizes: Tuple[int, ...]=(30, 30), 
+                      mlp_kwargs: Dict[str, Any]=None, 
+                      sym_kwargs: Dict[str, Any]=None,
+                      per_particle: bool=False
+                      ) -> Tuple[nn.InitFn,
+                                 Callable[[PyTree, Array], Array]]:
   if sym_kwargs is None:
     sym_kwargs = {}
   if mlp_kwargs is None:
@@ -640,17 +791,35 @@ def behler_parrinello(displacement,
     return np.sum(readout)
   return model.init, model.apply
 
-def behler_parrinello_neighbor_list(displacement,
-                                    species=None,
-                                    mlp_sizes=(30, 30),
-                                    mlp_kwargs=None,
-                                    sym_kwargs=None):
+
+def behler_parrinello_neighbor_list(displacement: DisplacementFn,
+                                    box_size: float,
+                                    species: Array=None,
+                                    mlp_sizes: Tuple[int, ...]=(30, 30),
+                                    mlp_kwargs: Dict[str, Any]=None,
+                                    sym_kwargs: Dict[str, Any]=None,
+                                    dr_threshold: float=0.5
+                                    ) -> Tuple[NeighborFn,
+                                               nn.InitFn,
+                                               Callable[[PyTree,
+                                                         Array,
+                                                         NeighborList],
+                                                        Array]]:
   if sym_kwargs is None:
     sym_kwargs = {}
   if mlp_kwargs is None:
     mlp_kwargs = {
         'activation': np.tanh
     }
+
+  cutoff_distance = 8.0
+  if 'cutoff_distance' in sym_kwargs:
+    cutoff_distance = sym_kwargs['cutoff_distance']
+
+  neighbor_fn = partition.neighbor_list(displacement,
+                                        box_size,
+                                        cutoff_distance,
+                                        dr_threshold)
 
   sym_fn = nn.behler_parrinello_symmetry_functions_neighbor_list(displacement,
                                                                  species,
@@ -664,10 +833,10 @@ def behler_parrinello_neighbor_list(displacement,
                                name='BPEncoder',
                                **mlp_kwargs)
     embedding_fn = vmap(embedding_fn)
-    sym = sym_fn(R, neighbor=neighbor, **kwargs)
+    sym = sym_fn(R, neighbor, **kwargs)
     readout = embedding_fn(sym)
     return np.sum(readout)
-  return model.init, model.apply
+  return neighbor_fn, model.init, model.apply
 
 
 class EnergyGraphNet(hk.Module):
@@ -676,7 +845,11 @@ class EnergyGraphNet(hk.Module):
   This model uses a GraphNetEmbedding combined with a decoder applied to the
   global state.
   """
-  def __init__(self, n_recurrences, mlp_sizes, mlp_kwargs=None, name='Energy'):
+  def __init__(self,
+               n_recurrences: int,
+               mlp_sizes: Tuple[int, ...],
+               mlp_kwargs: Dict[str, Any]=None,
+               name: str='Energy'):
     super(EnergyGraphNet, self).__init__(name=name)
 
     if mlp_kwargs is None:
@@ -697,7 +870,7 @@ class EnergyGraphNet(hk.Module):
     return np.squeeze(self._decoder(output.globals), axis=-1)
 
 
-def _canonicalize_node_state(nodes):
+def _canonicalize_node_state(nodes: Optional[Array]) -> Optional[Array]:
   if nodes is None:
     return nodes
 
@@ -711,12 +884,14 @@ def _canonicalize_node_state(nodes):
   return nodes
 
 
-def graph_network(displacement_fn,
-                  r_cutoff,
-                  nodes=None,
-                  n_recurrences=2,
-                  mlp_sizes=(64, 64),
-                  mlp_kwargs=None):
+def graph_network(displacement_fn: DisplacementFn,
+                  r_cutoff: float,
+                  nodes: Array=None,
+                  n_recurrences: int=2,
+                  mlp_sizes: Tuple[int, ...]=(64, 64),
+                  mlp_kwargs: Dict[str, Any]=None
+                  ) -> Tuple[nn.InitFn,
+                             Callable[[PyTree, Array], Array]]:
   """Convenience wrapper around EnergyGraphNet model.
 
   Args:
@@ -742,7 +917,7 @@ def graph_network(displacement_fn,
 
   @hk.without_apply_rng
   @hk.transform
-  def model(R, **kwargs):
+  def model(R: Array, **kwargs) -> Array:
     N = R.shape[0]
 
     d = partial(displacement_fn, **kwargs)
@@ -759,22 +934,27 @@ def graph_network(displacement_fn,
     edge_idx = np.broadcast_to(np.arange(N)[np.newaxis, :], (N, N))
     edge_idx = np.where(dr_2 < r_cutoff ** 2, edge_idx, N)
 
-    _globals = np.zeros((1,), R.dtype) 
+    _globals = np.zeros((1,), R.dtype)
 
     net = EnergyGraphNet(n_recurrences, mlp_sizes, mlp_kwargs)
-    return net(nn.GraphTuple(_nodes, dR, _globals, edge_idx))
+    return net(nn.GraphTuple(_nodes, dR, _globals, edge_idx))  # pytype: disable=wrong-arg-count
 
-  return model.init, model.apply 
+  return model.init, model.apply
 
 
-def graph_network_neighbor_list(displacement_fn,
-                                box_size,
-                                r_cutoff,
-                                dr_threshold,
-                                nodes=None,
-                                n_recurrences=2,
-                                mlp_sizes=(64, 64),
-                                mlp_kwargs=None):
+def graph_network_neighbor_list(displacement_fn: DisplacementFn,
+                                box_size: Box,
+                                r_cutoff: float,
+                                dr_threshold: float,
+                                nodes: Array=None,
+                                n_recurrences: int=2,
+                                mlp_sizes: Tuple[int, ...]=(64, 64),
+                                mlp_kwargs: Dict[str, Any]=None
+                                ) -> Tuple[NeighborFn,
+                                           nn.InitFn,
+                                           Callable[[PyTree,
+                                                     Array,
+                                                     NeighborList], Array]]:
   """Convenience wrapper around EnergyGraphNet model using neighbor lists.
 
   Args:
@@ -817,13 +997,13 @@ def graph_network_neighbor_list(displacement_fn,
     else:
       _nodes = np.zeros((N, 1), R.dtype) if nodes is None else nodes
 
-    _globals = np.zeros((1,), R.dtype) 
+    _globals = np.zeros((1,), R.dtype)
 
     dr_2 = space.square_distance(dR)
     edge_idx = np.where(dr_2 < r_cutoff ** 2, neighbor.idx, N)
 
     net = EnergyGraphNet(n_recurrences, mlp_sizes, mlp_kwargs)
-    return net(nn.GraphTuple(_nodes, dR, _globals, edge_idx))
+    return net(nn.GraphTuple(_nodes, dR, _globals, edge_idx))  # pytype: disable=wrong-arg-count
 
   neighbor_fn = partition.neighbor_list(displacement_fn,
                                         box_size,
