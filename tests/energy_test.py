@@ -21,7 +21,7 @@ import os
 from jax.config import config as jax_config
 from jax import random
 from jax import jit, vmap
-from jax.experimental import optix
+import optax
 import jax.numpy as np
 
 import numpy as onp
@@ -112,6 +112,35 @@ def make_eam_test_splines():
   pairwise_fn = spline(pairwise_data, dr[1] - dr[0])
   return charge_fn, embedding_fn, pairwise_fn
 
+
+def lattice(R_unit_cell, copies, lattice_vectors):
+  # Given a cell of positions, tile it.   
+  lattice_vectors = onp.array(lattice_vectors, f32)
+ 
+  N, d = R_unit_cell.shape
+  if isinstance(copies, int):
+    copies = (copies,) * d
+ 
+  if lattice_vectors.ndim == 0 or lattice_vectors.ndim == 1:
+    cartesian = True
+    L = onp.eye(d) * lattice_vectors[onp.newaxis, ...] 
+  elif lattice_vectors.ndim == 2:
+    assert lattice_vectors.shape[0] == lattice_vectors.shape[1]
+    cartesian = False
+    L = onp.eye(d) / onp.array(copies)[onp.newaxis, ...]
+    R_unit_cell /= onp.array(copies)[onp.newaxis, ...]
+  else:
+    raise ValueError()
+ 
+  Rs = []
+  for indices in onp.ndindex(copies):
+    dR = 0.
+    for idx, i in enumerate(indices):
+      dR += i * L[idx]
+    R = R_unit_cell + dR[onp.newaxis, :]
+    Rs += [R]
+  
+  return onp.concatenate(Rs)
 
 class EnergyTest(jtu.JaxTestCase):
 
@@ -243,6 +272,21 @@ class EnergyTest(jtu.JaxTestCase):
           dist_fun, LATCON, species=species)
       nbrs = neighbor_fn(R_f)
       self.assertAllClose(-857939.528386092, energy_nei(R_f, nbrs))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': 'dtype={}_num_repetitions={}'.format(dtype.__name__, num_repetitions),
+          'dtype': dtype,
+          'num_repetitions': num_repetitions,
+      } for dtype in POSITION_DTYPE for num_repetitions in [2, 3]))
+  def test_stillinger_weber(self, dtype, num_repetitions):
+      lattice_vectors = lattice_vectors = np.array([[0, .5, .5], [.5, 0, .5], [.5, .5, 0]]) * 5.428
+      positions = np.array([[0,0,0], [0.25, 0.25, 0.25]])
+      positions = lattice(positions, num_repetitions, lattice_vectors)
+      lattice_vectors *= num_repetitions
+      displacement, shift = space.periodic_general(lattice_vectors)
+      energy_fn = jit(energy.stillinger_weber_energy(displacement))
+      self.assertAllClose(energy_fn(positions)/positions.shape[0], -4.336503)
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -475,18 +519,42 @@ class EnergyTest(jtu.JaxTestCase):
   def test_behler_parrinello_network(self, N_types, dtype):
     key = random.PRNGKey(1)
     R = np.array([[0,0,0], [1,1,1], [1,1,0]], dtype)
-    species = np.array([1, 1, N_types])
+    species = np.array([1, 1, N_types]) if N_types > 1 else None
     box_size = f32(1.5)
     displacement, _ = space.periodic(box_size)
     nn_init, nn_apply = energy.behler_parrinello(displacement, species)
     params = nn_init(key, R)
     nn_force_fn = grad(nn_apply, argnums=1)
-    nn_force = nn_force_fn(params, R)
-    nn_energy = nn_apply(params, R)
+    nn_force = jit(nn_force_fn)(params, R)
+    nn_energy = jit(nn_apply)(params, R)
     self.assertAllClose(np.any(np.isnan(nn_energy)), False)
     self.assertAllClose(np.any(np.isnan(nn_force)), False)
     self.assertAllClose(nn_force.shape, [3,3])
-  
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_N_types={}_dtype={}'.format(N_types, dtype.__name__),
+          'N_types': N_types,
+          'dtype': dtype,
+      } for N_types in N_TYPES_TO_TEST for dtype in POSITION_DTYPE))
+  def test_behler_parrinello_network_neighbor_list(self, N_types, dtype):
+    key = random.PRNGKey(1)
+    R = np.array([[0,0,0], [1,1,1], [1,1,0]], dtype)
+    species = np.array([1, 1, N_types]) if N_types > 1 else None
+    box_size = f32(1.5)
+    displacement, _ = space.periodic(box_size)
+    neighbor_fn, nn_init, nn_apply = energy.behler_parrinello_neighbor_list(
+      displacement, box_size, species)
+
+    nbrs = neighbor_fn(R) 
+    params = nn_init(key, R, nbrs)
+    nn_force_fn = grad(nn_apply, argnums=1)
+    nn_force = jit(nn_force_fn)(params, R, nbrs)
+    nn_energy = jit(nn_apply)(params, R, nbrs)
+    self.assertAllClose(np.any(np.isnan(nn_energy)), False)
+    self.assertAllClose(np.any(np.isnan(nn_force)), False)
+    self.assertAllClose(nn_force.shape, [3,3])
+
   @parameterized.named_parameters(jtu.cases_from_list(
       {
           'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
@@ -613,16 +681,16 @@ class EnergyTest(jtu.JaxTestCase):
     @jit
     def loss(params, R):
       return np.mean((vmap(energy_fn, (None, 0))(params, R) - E_gt(R, dr0)) ** 2)
-    
-    opt = optix.chain(optix.clip_by_global_norm(1.0), optix.adam(1e-4))
+
+    opt = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(1e-4))
 
 
     @jit
     def update(params, opt_state, R):
       updates, opt_state = opt.update(grad(loss)(params, R),
                                       opt_state)
-      return optix.apply_updates(params, updates), opt_state
-    
+      return optax.apply_updates(params, updates), opt_state
+
     opt_state = opt.init(params)
 
     l0 = loss(params, R)

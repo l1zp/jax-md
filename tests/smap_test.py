@@ -462,8 +462,7 @@ class SMapTest(jtu.JaxTestCase):
     metric = lambda Ra, Rb, **kwargs: \
         np.sum(displacement(Ra, Rb, **kwargs) ** 2, axis=-1)
 
-    mapped_square = smap.pair(
-        square, metric, species=quantity.Dynamic, param=params)
+    mapped_square = smap.pair(square, metric, species=2, param=params)
 
     metric = space.map_product(metric)
 
@@ -478,8 +477,8 @@ class SMapTest(jtu.JaxTestCase):
           R_1 = R[species == i]
           R_2 = R[species == j]
           total = total + 0.5 * np.sum(square(metric(R_1, R_2), param))
-      self.assertAllClose(
-        mapped_square(R, species, 2), np.array(total, dtype=dtype))
+      self.assertAllClose(mapped_square(R, species),
+                          np.array(total, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -498,8 +497,7 @@ class SMapTest(jtu.JaxTestCase):
     species = random.randint(split, (PARTICLE_COUNT,), 0, 2)
     disp, _ = space.free()
 
-    mapped_square = smap.pair(
-        square, disp, species=quantity.Dynamic, param=params)
+    mapped_square = smap.pair(square, disp, species=2, param=params)
 
     disp = vmap(vmap(disp, (0, None), 0), (None, 0), 0)
 
@@ -514,8 +512,8 @@ class SMapTest(jtu.JaxTestCase):
           R_1 = R[species == i]
           R_2 = R[species == j]
           total = total + 0.5 * np.sum(square(disp(R_1, R_2), param))
-      self.assertAllClose(
-        mapped_square(R, species, 2), np.array(total, dtype=dtype))
+      self.assertAllClose(mapped_square(R, species),
+                          np.array(total, dtype=dtype))
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {
@@ -750,6 +748,68 @@ class SMapTest(jtu.JaxTestCase):
       nbrs = neighbor_fn(R)
       self.assertAllClose(mapped_square(R, sigma=sigma),
                           neighbor_square(R, nbrs, sigma=sigma))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_triplet_no_species_scalar(self, spatial_dimension, dtype):
+      key = random.PRNGKey(0)
+
+      angle_fn = lambda dR1, dR2: np.sum(np.square(dR1) + np.square(dR2))
+      square = lambda dR: np.sum(np.square(dR))
+      displacement, _ = space.free()
+      metric = lambda Ra, Rb, **kwargs: \
+          np.sum(displacement(Ra, Rb, **kwargs) ** 2, axis=-1)
+
+      triplet_square = smap.triplet(angle_fn, displacement)
+      metric = space.map_product(metric)
+
+      count = PARTICLE_COUNT // 50
+
+      for _ in range(STOCHASTIC_SAMPLES):
+        key, split = random.split(key)
+        R = random.uniform(
+            split, (count, spatial_dimension), dtype=dtype)
+
+        self.assertAllClose(
+            triplet_square(R) / count / 2.,
+            np.array(0.5 * np.sum(metric(R, R)), dtype=dtype))
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {
+          'testcase_name': '_dim={}_dtype={}'.format(dim, dtype.__name__),
+          'spatial_dimension': dim,
+          'dtype': dtype,
+      } for dim in SPATIAL_DIMENSION for dtype in POSITION_DTYPE))
+  def test_triplet_static_species_scalar(self, spatial_dimension, dtype):
+      key = random.PRNGKey(0)
+      angle_fn = lambda dR1, dR2, param=5.0: param * np.sum(np.square(dR1))
+      square = lambda dR, param: param * np.sum(np.square(dR))
+      params = f32(np.array([[[1., 1.], [2., 0.]], [[0., 2.], [1., 1.]]]))
+
+      count = PARTICLE_COUNT // 50
+      key, split = random.split(key)
+      species = random.randint(split, (count,), 0, 2)
+      displacement, _ = space.free()
+      metric = lambda Ra, Rb, **kwargs: \
+        np.sum(displacement(Ra, Rb, **kwargs) ** 2, axis=-1)
+      triplet_square = smap.triplet(angle_fn, displacement, species=species, param=params, reduce_axis=None)
+
+      metric = space.map_product(metric)
+      for _ in range(STOCHASTIC_SAMPLES):
+        key, split = random.split(key)
+        R = random.uniform(
+            split, (count, spatial_dimension), dtype=dtype)
+        total = 0.
+        for i in range(2):
+          for j in range(2):
+            R_1 = R[species == i]
+            R_2 = R[species == j]
+            total += 0.5 * np.sum(metric(R_1, R_2))
+        self.assertAllClose(triplet_square(R) / count, np.array(total, dtype=dtype))
 
 if __name__ == '__main__':
   absltest.main()
